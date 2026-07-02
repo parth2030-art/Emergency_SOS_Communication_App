@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.example.emergencysoscommunicationapp"
-    compileSdk = 37
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.emergencysoscommunicationapp"
         minSdk = 29
-        targetSdk = 37
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -26,8 +26,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 }
 
@@ -36,11 +36,11 @@ dependencies {
 
     implementation(platform(libs.firebase.bom))
 
-    implementation("com.google.firebase:firebase-database-ktx")
-    implementation("com.google.firebase:firebase-messaging-ktx")
+    implementation(libs.firebase.database)
+    implementation(libs.firebase.messaging)
     implementation(libs.play.services.location)
-    implementation("com.google.code.gson:gson:2.14.0")
-    implementation("androidx.recyclerview:recyclerview:1.4.0")
+    implementation(libs.gson)
+    implementation(libs.androidx.recyclerview)
 
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
