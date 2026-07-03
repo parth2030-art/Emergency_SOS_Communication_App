@@ -15,7 +15,20 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
+import com.google.firebase.database.FirebaseDatabase
+import android.os.Looper
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 class HomeActivity : AppCompatActivity() {
+
+    private lateinit var locationCallback: LocationCallback
+
+    private val fusedLocationClient by lazy {
+        LocationServices.getFusedLocationProviderClient(this)
+    }
+
+    private var isTracking = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,9 +48,11 @@ class HomeActivity : AppCompatActivity() {
         val btnCall = findViewById<ImageButton>(R.id.btnCall)
         val btnSMS = findViewById<ImageButton>(R.id.btnSMS)
         val btnLocation = findViewById<ImageButton>(R.id.btnLocation)
+        val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
 
         btnSOS.setOnClickListener {
             sendSOSMessage()
+            startLiveLocationTracking()
         }
 
         btnSMS.setOnClickListener {
@@ -60,6 +75,10 @@ class HomeActivity : AppCompatActivity() {
 
         btnCall.setOnClickListener {
             callEmergencyContact()
+        }
+
+        btnStopSOS.setOnClickListener {
+            stopLiveLocationTracking()
         }
     }
 
@@ -103,6 +122,11 @@ class HomeActivity : AppCompatActivity() {
         ).addOnSuccessListener { location ->
 
             val message = if (location != null) {
+
+                uploadLocationToFirebase(
+                    location.latitude,
+                    location.longitude
+                )
 
                 """
 🚨 EMERGENCY SOS 🚨
@@ -215,6 +239,117 @@ Location unavailable.
         mediaPlayer.setOnCompletionListener {
             it.release()
         }
+    }
+
+    private fun uploadLocationToFirebase(
+        latitude: Double,
+        longitude: Double
+    ) {
+        val database =
+            FirebaseDatabase.getInstance().reference
+
+        val locationData = mapOf(
+            "latitude" to latitude,
+            "longitude" to longitude,
+            "time" to System.currentTimeMillis(),
+            "status" to "SOS_ACTIVE"
+        )
+
+        database.child("sos_locations")
+            .child("user_1")
+            .setValue(locationData)
+            .addOnSuccessListener {
+                Toast.makeText(
+                    this,
+                    "Location uploaded to Firebase",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .addOnFailureListener {
+                Toast.makeText(
+                    this,
+                    "Firebase upload failed",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+    }
+    private fun startLiveLocationTracking() {
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(
+                this,
+                "Location Permission Required",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        isTracking = true
+
+        val locationRequest =
+            LocationRequest.Builder(
+                Priority.PRIORITY_HIGH_ACCURACY,
+                5000
+            ).build()
+
+        locationCallback =
+            object : LocationCallback() {
+                override fun onLocationResult(
+                    locationResult: LocationResult
+                ) {
+                    val location =
+                        locationResult.lastLocation ?: return
+
+                    uploadLocationToFirebase(
+                        location.latitude,
+                        location.longitude
+                    )
+                }
+            }
+
+        fusedLocationClient.requestLocationUpdates(
+            locationRequest,
+            locationCallback,
+            Looper.getMainLooper()
+        )
+
+        Toast.makeText(
+            this,
+            "Live Tracking Started",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun stopLiveLocationTracking() {
+
+        if (::locationCallback.isInitialized) {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+        }
+
+        isTracking = false
+
+        updateSOSStatus()
+
+        Toast.makeText(
+            this,
+            "SOS Stopped",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+    private fun updateSOSStatus() {
+
+        val database = FirebaseDatabase.getInstance().reference
+
+        database.child("sos_locations")
+            .child("user_1")
+            .child("status")
+            .setValue("SOS_STOPPED")
+
     }
 
 }
