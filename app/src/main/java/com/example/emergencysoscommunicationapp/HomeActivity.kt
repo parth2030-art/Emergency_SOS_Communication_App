@@ -20,6 +20,8 @@ import android.os.Looper
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
+import android.os.Build
+import com.google.firebase.messaging.FirebaseMessaging
 class HomeActivity : AppCompatActivity() {
 
     private lateinit var locationCallback: LocationCallback
@@ -34,6 +36,14 @@ class HomeActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_home)
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                200
+            )
+        }
+
         ActivityCompat.requestPermissions(
             this,
             arrayOf(
@@ -42,6 +52,20 @@ class HomeActivity : AppCompatActivity() {
             ),
             100
         )
+
+        FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { token ->
+                Toast.makeText(
+                    this,
+                    "FCM Token Saved",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                FirebaseDatabase.getInstance().reference
+                    .child("fcm_tokens")
+                    .child("user_1")
+                    .setValue(token)
+            }
 
         val btnSOS = findViewById<Button>(R.id.btnSOS)
         val btnContacts = findViewById<ImageButton>(R.id.btnContacts)
