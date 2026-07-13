@@ -35,7 +35,9 @@ android {
 dependencies {
 
     implementation(platform(libs.firebase.bom))
-
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.google.android.gms:play-services-maps:18.2.0")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
     implementation(libs.firebase.database)
     implementation(libs.firebase.messaging)
     implementation(libs.play.services.location)
