@@ -18,6 +18,7 @@ class AddContactActivity : BaseActivity() {
         val etPhone = findViewById<EditText>(R.id.etPhone)
         val etRelation = findViewById<EditText>(R.id.etRelation)
         val btnSave = findViewById<Button>(R.id.btnSave)
+        //new line added
 
         val oldName = intent.getStringExtra("name")
         val oldPhone = intent.getStringExtra("phone")
