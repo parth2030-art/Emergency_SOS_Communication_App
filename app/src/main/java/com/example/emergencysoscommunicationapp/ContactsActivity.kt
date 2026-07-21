@@ -2,21 +2,24 @@ package com.example.emergencysoscommunicationapp
 
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Button
+import android.widget.ImageButton
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 
 class ContactsActivity : BaseActivity() {
 
     private lateinit var recyclerContacts: RecyclerView
-    private lateinit var btnAddContact: Button
+    private lateinit var btnAddContact: FloatingActionButton
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_contacts)
 
-        // Common Back Button from BaseActivity
-        enableBackButton("Emergency Contacts")
+        val btnBack = findViewById<ImageButton>(R.id.btnBack)
+        btnBack.setOnClickListener {
+            finish()
+        }
 
         recyclerContacts = findViewById(R.id.recyclerContacts)
         btnAddContact = findViewById(R.id.btnAddContact)

@@ -5,7 +5,7 @@ import android.net.Uri
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
+import android.widget.ImageButton
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 
@@ -22,7 +22,13 @@ class CallContactAdapter(
         val txtPhone: TextView =
             view.findViewById(R.id.txtPhone)
 
-        val btnCall: Button =
+        val txtRelation: TextView =
+            view.findViewById(R.id.txtRelation)
+
+        val txtAvatarInitial: TextView =
+            view.findViewById(R.id.txtAvatarInitial)
+
+        val btnCall: ImageButton =
             view.findViewById(R.id.btnCall)
     }
 
@@ -51,6 +57,22 @@ class CallContactAdapter(
 
         holder.txtName.text = contact.name
         holder.txtPhone.text = contact.phone
+        holder.txtRelation.text = contact.relation.ifEmpty { "Relation" }
+
+        // Avatar Initial
+        val initial = if (contact.name.isNotBlank()) {
+            val parts = contact.name.trim().split("\\s+".toRegex())
+            if (parts.size >= 2 && parts[0].isNotEmpty() && parts[1].isNotEmpty()) {
+                "${parts[0][0]}${parts[1][0]}".uppercase()
+            } else if (parts.isNotEmpty() && parts[0].isNotEmpty()) {
+                "${parts[0][0]}".uppercase()
+            } else {
+                "?"
+            }
+        } else {
+            "?"
+        }
+        holder.txtAvatarInitial.text = initial
 
         holder.btnCall.setOnClickListener {
 

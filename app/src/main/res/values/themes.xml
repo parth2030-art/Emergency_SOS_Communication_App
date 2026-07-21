@@ -2,7 +2,14 @@
     <!-- Base application theme. -->
     <style name="Base.Theme.EmergencySOSCommunicationApp" parent="Theme.Material3.DayNight.NoActionBar">
         <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryDark">@color/primary_dark</item>
+        <item name="colorAccent">@color/primary_light</item>
+        
+        <item name="android:windowBackground">@color/bg_light</item>
+        <item name="colorSurface">@color/card_bg_light</item>
+        <item name="colorOnSurface">@color/dark_gray</item>
+        <item name="colorSecondary">@color/medium_gray</item>
     </style>
 
     <style name="Theme.EmergencySOSCommunicationApp" parent="Base.Theme.EmergencySOSCommunicationApp" />
