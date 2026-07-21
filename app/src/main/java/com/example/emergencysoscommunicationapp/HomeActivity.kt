@@ -11,6 +11,13 @@ import android.media.MediaPlayer
 import com.google.android.gms.location.Priority
 import android.widget.ImageButton
 import android.widget.Toast
+import android.view.View
+import android.view.animation.AlphaAnimation
+import android.view.animation.Animation
+import android.view.animation.AnimationSet
+import android.view.animation.ScaleAnimation
+import android.widget.ImageView
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -21,7 +28,10 @@ import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import android.os.Build
+import androidx.core.view.isVisible
 import com.google.firebase.messaging.FirebaseMessaging
+import com.google.android.material.card.MaterialCardView
+
 class HomeActivity : AppCompatActivity() {
 
     private lateinit var locationCallback: LocationCallback
@@ -68,19 +78,20 @@ class HomeActivity : AppCompatActivity() {
             }
 
         val btnSOS = findViewById<Button>(R.id.btnSOS)
-        val btnContacts = findViewById<ImageButton>(R.id.btnContacts)
-        val btnCall = findViewById<ImageButton>(R.id.btnCall)
-        val btnSMS = findViewById<ImageButton>(R.id.btnSMS)
-        val btnLocation = findViewById<ImageButton>(R.id.btnLocation)
+        val btnContacts = findViewById<MaterialCardView>(R.id.btnContacts)
+        val btnCall = findViewById<MaterialCardView>(R.id.btnCall)
+        val btnSMS = findViewById<MaterialCardView>(R.id.btnSMS)
+        val btnLocation = findViewById<MaterialCardView>(R.id.btnLocation)
         val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
+        val btnSettings = findViewById<ImageButton>(R.id.btnSettings)
 
         btnSOS.setOnClickListener {
             sendSOSMessage()
+            btnStopSOS.isVisible = true
             startLiveLocationTracking()
         }
 
         btnSMS.setOnClickListener {
-
             startActivity(
                 Intent(
                     this,
@@ -98,11 +109,70 @@ class HomeActivity : AppCompatActivity() {
         }
 
         btnCall.setOnClickListener {
-            callEmergencyContact()
+            startActivity(Intent(this, CallContactsActivity::class.java))
         }
 
         btnStopSOS.setOnClickListener {
             stopLiveLocationTracking()
+            btnStopSOS.isVisible = false
+        }
+
+        btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+
+        startPulseAnimation()
+        updateLocationStatusUI()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        startPulseAnimation()
+        updateLocationStatusUI()
+    }
+
+    private fun startPulseAnimation() {
+        val pulseRing = findViewById<View>(R.id.sosPulseRing) ?: return
+        val scaleX = ScaleAnimation(
+            1f, 1.25f, 1f, 1.25f,
+            Animation.RELATIVE_TO_SELF, 0.5f,
+            Animation.RELATIVE_TO_SELF, 0.5f
+        ).apply {
+            duration = 1500
+            repeatCount = Animation.INFINITE
+            repeatMode = Animation.RESTART
+        }
+        val fade = AlphaAnimation(0.4f, 0f).apply {
+            duration = 1500
+            repeatCount = Animation.INFINITE
+            repeatMode = Animation.RESTART
+        }
+        val animSet = AnimationSet(true).apply {
+            addAnimation(scaleX)
+            addAnimation(fade)
+        }
+        pulseRing.startAnimation(animSet)
+    }
+
+    private fun updateLocationStatusUI() {
+        val txtLocationStatus = findViewById<TextView>(R.id.txtLocationStatus) ?: return
+        val imgStatusDot = findViewById<ImageView>(R.id.imgStatusDot) ?: return
+        
+        val isGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        if (isGranted) {
+            txtLocationStatus.text = "Location Enabled"
+            imgStatusDot.imageTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.success_green)
+            )
+        } else {
+            txtLocationStatus.text = "Location Disabled"
+            imgStatusDot.imageTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.error_red)
+            )
         }
     }
 
@@ -145,6 +215,9 @@ class HomeActivity : AppCompatActivity() {
             null
         ).addOnSuccessListener { location ->
 
+            val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
+            val customMsg = prefs.getString("custom_msg", "I need help immediately.") ?: "I need help immediately."
+
             val message = if (location != null) {
 
                 uploadLocationToFirebase(
@@ -155,7 +228,7 @@ class HomeActivity : AppCompatActivity() {
                 """
 🚨 EMERGENCY SOS 🚨
 
-I need help immediately.
+$customMsg
 
 My Current Location:
 https://maps.google.com/?q=${location.latitude},${location.longitude}
@@ -166,7 +239,7 @@ https://maps.google.com/?q=${location.latitude},${location.longitude}
                 """
 🚨 EMERGENCY SOS 🚨
 
-I need help immediately.
+$customMsg
 
 Location unavailable.
             """.trimIndent()

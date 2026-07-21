@@ -12,7 +12,10 @@ class CallContactsActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_call_contacts)
 
-        enableBackButton("Call Contacts")
+        val btnBack = findViewById<android.widget.ImageButton>(R.id.btnBack)
+        btnBack.setOnClickListener {
+            finish()
+        }
 
         recyclerCallContacts =
             findViewById(R.id.recyclerCallContacts)

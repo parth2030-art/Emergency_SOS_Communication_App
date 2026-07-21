@@ -1,9 +1,13 @@
 package com.example.emergencysoscommunicationapp
 
 import android.os.Bundle
+import android.widget.ArrayAdapter
+import android.widget.AutoCompleteTextView
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.Toast
+import com.google.android.material.textfield.TextInputEditText
 
 class AddContactActivity : BaseActivity() {
 
@@ -11,14 +15,21 @@ class AddContactActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_add_contact)
 
-        // Common Back Button from BaseActivity
-        enableBackButton("Add Contact")
+        val btnBack = findViewById<ImageButton>(R.id.btnBack)
+        btnBack.setOnClickListener {
+            finish()
+        }
 
-        val etName = findViewById<EditText>(R.id.etName)
-        val etPhone = findViewById<EditText>(R.id.etPhone)
-        val etRelation = findViewById<EditText>(R.id.etRelation)
+        val etName = findViewById<TextInputEditText>(R.id.etName)
+        val etPhone = findViewById<TextInputEditText>(R.id.etPhone)
+        val etRelation = findViewById<AutoCompleteTextView>(R.id.etRelation)
         val btnSave = findViewById<Button>(R.id.btnSave)
         //new line added
+
+        // Set up the Relationship Dropdown Menu
+        val relations = arrayOf("Family", "Friend", "Spouse", "Work", "Other")
+        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, relations)
+        etRelation.setAdapter(adapter)
 
         val oldName = intent.getStringExtra("name")
         val oldPhone = intent.getStringExtra("phone")
@@ -26,7 +37,9 @@ class AddContactActivity : BaseActivity() {
 
         etName.setText(oldName)
         etPhone.setText(oldPhone)
-        etRelation.setText(oldRelation)
+        if (oldRelation != null) {
+            etRelation.setText(oldRelation, false)
+        }
 
         btnSave.setOnClickListener {
 

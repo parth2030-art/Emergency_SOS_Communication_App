@@ -6,134 +6,119 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
-import android.widget.Button
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.TextView
-import androidx.core.app.ActivityCompat
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.*
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.firebase.database.FirebaseDatabase
 import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import java.text.SimpleDateFormat
+import java.util.*
 
 class LocationActivity : BaseActivity() {
 
-    private lateinit var txtLocation: TextView
-    private lateinit var btnOpenMap: Button
     private lateinit var mapView: MapView
+    private lateinit var cardTrackingStatus: MaterialCardView
+    private lateinit var txtTrackingStatus: TextView
+    private lateinit var txtLastUpdated: TextView
+    private lateinit var imgTrackingDot: ImageView
+    private lateinit var btnStopSharing: MaterialButton
+
+    private var locationMarker: Marker? = null
 
     private val fusedLocationClient by lazy {
         LocationServices.getFusedLocationProviderClient(this)
     }
 
-    private var locationMarker: Marker? = null
-
+    private var isTracking = false
     private var latitude = 0.0
     private var longitude = 0.0
 
+    // High accuracy updates: 5 seconds interval, 3 seconds fastest, 5 meters minimum displacement
     private val locationRequest =
         LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
-            3000L
+            5000L
         )
-            .setMinUpdateIntervalMillis(1500L)
+            .setMinUpdateIntervalMillis(3000L)
+            .setMinUpdateDistanceMeters(5.0f)
             .build()
 
-    private val locationCallback =
-        object : LocationCallback() {
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(locationResult: LocationResult) {
+            super.onLocationResult(locationResult)
+            val location = locationResult.lastLocation ?: return
 
-            override fun onLocationResult(locationResult: LocationResult) {
-                super.onLocationResult(locationResult)
+            latitude = location.latitude
+            longitude = location.longitude
 
-                val location =
-                    locationResult.lastLocation ?: return
-
-                latitude = location.latitude
-                longitude = location.longitude
-
-                updateMapLocation(
-                    latitude,
-                    longitude,
-                    location.accuracy
-                )
-            }
+            updateMapLocation(latitude, longitude)
         }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        Configuration.getInstance().userAgentValue =
-            packageName
-
         setContentView(R.layout.activity_location)
 
-        enableBackButton("My Location")
+        val btnBack = findViewById<ImageButton>(R.id.btnBack)
+        btnBack.setOnClickListener {
+            finish()
+        }
 
-        txtLocation = findViewById(R.id.txtLocation)
-        btnOpenMap = findViewById(R.id.btnOpenMap)
         mapView = findViewById(R.id.mapView)
+        cardTrackingStatus = findViewById(R.id.cardTrackingStatus)
+        txtTrackingStatus = findViewById(R.id.txtTrackingStatus)
+        txtLastUpdated = findViewById(R.id.txtLastUpdated)
+        imgTrackingDot = findViewById(R.id.imgTrackingDot)
+        btnStopSharing = findViewById(R.id.btnStopSharing)
 
         setupMap()
 
-        btnOpenMap.setOnClickListener {
-            openLocationInExternalMap()
+        btnStopSharing.setOnClickListener {
+            stopLiveLocationSharing()
         }
 
         checkLocationPermission()
     }
 
     private fun setupMap() {
-
-        mapView.setTileSource(
-            TileSourceFactory.MAPNIK
-        )
-
+        // Enforce explicit secure HTTPS tile provider
+        mapView.setTileSource(MapHelper.getOsmTileSource())
         mapView.setMultiTouchControls(true)
-
-        mapView.controller.setZoom(18.0)
+        mapView.controller.setZoom(17.0)
     }
 
     private fun checkLocationPermission() {
+        val fineLocationPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
 
-        val fineLocationPermission =
-            ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
-
-        if (
-            fineLocationPermission !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                ),
-                LOCATION_PERMISSION_REQUEST
-            )
-
+        if (fineLocationPermission != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Location permission is required for live tracking", Toast.LENGTH_SHORT).show()
         } else {
             startLiveLocationUpdates()
         }
     }
 
     private fun startLiveLocationUpdates() {
-
-        if (
-            ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             return
         }
+
+        isTracking = true
+        txtTrackingStatus.text = "Status: Active"
+        txtTrackingStatus.setTextColor(ContextCompat.getColor(this, R.color.success_green))
+        imgTrackingDot.imageTintList = android.content.res.ColorStateList.valueOf(
+            ContextCompat.getColor(this, R.color.success_green)
+        )
 
         fusedLocationClient.requestLocationUpdates(
             locationRequest,
@@ -142,130 +127,82 @@ class LocationActivity : BaseActivity() {
         )
     }
 
-    private fun updateMapLocation(
-        latitude: Double,
-        longitude: Double,
-        accuracy: Float
-    ) {
-
-        val currentPoint =
-            GeoPoint(latitude, longitude)
-
-        txtLocation.text =
-            "Latitude: $latitude\n" +
-                    "Longitude: $longitude\n" +
-                    "Accuracy: ${accuracy.toInt()} metres"
-
-        if (locationMarker == null) {
-
-            locationMarker = Marker(mapView).apply {
-                position = currentPoint
-                title = "My live location"
-                setAnchor(
-                    Marker.ANCHOR_CENTER,
-                    Marker.ANCHOR_BOTTOM
-                )
-            }
-
-            mapView.overlays.add(locationMarker)
-
-        } else {
-            locationMarker?.position = currentPoint
+    private fun stopLiveLocationSharing() {
+        if (isTracking) {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+            isTracking = false
         }
 
-        mapView.controller.animateTo(currentPoint)
+        txtTrackingStatus.text = "Status: Inactive"
+        txtTrackingStatus.setTextColor(ContextCompat.getColor(this, R.color.error_red))
+        imgTrackingDot.imageTintList = android.content.res.ColorStateList.valueOf(
+            ContextCompat.getColor(this, R.color.error_red)
+        )
+
+        // Upload status stopped to Firebase
+        val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
+        database.child("status").setValue("SOS_STOPPED")
+
+        Toast.makeText(this, "Live Location Sharing Stopped", Toast.LENGTH_SHORT).show()
+        
+        // Finish activity after successfully stopping
+        finish()
+    }
+
+    private fun updateMapLocation(latitude: Double, longitude: Double) {
+        val point = GeoPoint(latitude, longitude)
+
+        // Update UI
+        val sdf = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
+        txtLastUpdated.text = "Last Updated: ${sdf.format(Date())}"
+
+        // Update Map Marker (single marker, moved instead of recreated)
+        if (locationMarker == null) {
+            locationMarker = Marker(mapView).apply {
+                title = "My Live Location"
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                val drawable = ContextCompat.getDrawable(this@LocationActivity, R.drawable.ic_location)
+                if (drawable != null) {
+                    drawable.setTint(ContextCompat.getColor(this@LocationActivity, R.color.primary))
+                    icon = drawable
+                }
+            }
+            mapView.overlays.add(locationMarker)
+            mapView.controller.setCenter(point)
+        } else {
+            locationMarker?.position = point
+            mapView.controller.animateTo(point)
+        }
 
         mapView.invalidate()
-    }
 
-    private fun openLocationInExternalMap() {
-
-        if (latitude == 0.0 && longitude == 0.0) {
-
-            txtLocation.text =
-                "Waiting for current location..."
-
-            return
-        }
-
-        val uri = Uri.parse(
-            "geo:$latitude,$longitude?q=$latitude,$longitude"
-        )
-
-        val intent = Intent(
-            Intent.ACTION_VIEW,
-            uri
-        )
-
-        try {
-            startActivity(intent)
-        } catch (exception: Exception) {
-
-            val browserUri = Uri.parse(
-                "https://www.openstreetmap.org/" +
-                        "?mlat=$latitude&mlon=$longitude" +
-                        "#map=18/$latitude/$longitude"
+        // Upload updates to Firebase Realtime Database
+        if (isTracking) {
+            val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
+            val locationData = mapOf(
+                "latitude" to latitude,
+                "longitude" to longitude,
+                "time" to System.currentTimeMillis(),
+                "status" to "SOS_ACTIVE"
             )
-
-            startActivity(
-                Intent(
-                    Intent.ACTION_VIEW,
-                    browserUri
-                )
-            )
+            database.setValue(locationData)
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(
-            requestCode,
-            permissions,
-            grantResults
-        )
-
-        if (
-            requestCode == LOCATION_PERMISSION_REQUEST &&
-            grantResults.isNotEmpty() &&
-            grantResults[0] ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            startLiveLocationUpdates()
-        } else {
-            txtLocation.text =
-                "Location permission is required."
-        }
-    }
-
+    // OSMDroid Lifecycle management
     override fun onResume() {
         super.onResume()
-
         mapView.onResume()
-
-        if (
-            ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             startLiveLocationUpdates()
         }
     }
 
     override fun onPause() {
         super.onPause()
-
-        fusedLocationClient.removeLocationUpdates(
-            locationCallback
-        )
-
         mapView.onPause()
-    }
-
-    companion object {
-        private const val LOCATION_PERMISSION_REQUEST = 101
+        if (isTracking) {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+        }
     }
 }
