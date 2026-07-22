@@ -5,53 +5,128 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#E92531">
+    android:background="@drawable/bg_emergency_gradient">
 
-    <ImageView
-        android:id="@+id/imgLogo"
-        android:layout_width="120dp"
-        android:layout_height="120dp"
-        android:src="@drawable/sos_logo"
-        android:contentDescription="SOS Logo"
+    <!-- Center Content Container -->
+    <LinearLayout
+        android:id="@+id/centerContainer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/bottomContainer"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginBottom="220dp"/>
+        app:layout_setVerticalBias="0.45">
 
-    <TextView
-        android:id="@+id/txtTitle"
+        <!-- Glassmorphic Logo Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="160dp"
+            android:layout_height="160dp"
+            app:cardCornerRadius="80dp"
+            app:cardBackgroundColor="@color/glass_white_overlay"
+            app:strokeWidth="1.5dp"
+            app:strokeColor="#80FF8A80"
+            app:cardElevation="12dp"
+            android:layout_marginBottom="28dp">
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:padding="24dp">
+
+                <ImageView
+                    android:id="@+id/imgLogo"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:src="@drawable/sos_logo"
+                    android:contentDescription="Emergency SOS Logo"
+                    android:scaleType="fitCenter"/>
+            </FrameLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- App Title -->
+        <TextView
+            android:id="@+id/txtTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="EMERGENCY SOS"
+            android:textColor="@color/white"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.15"
+            android:gravity="center"/>
+
+        <!-- Subtitle -->
+        <TextView
+            android:id="@+id/txtSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Stay Safe, We're Here to Help"
+            android:textColor="@color/light_gray"
+            android:textSize="15sp"
+            android:alpha="0.85"
+            android:letterSpacing="0.04"
+            android:gravity="center"
+            android:layout_marginTop="8dp"/>
+
+        <!-- Feature Pill Tag -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="@drawable/bg_status_pill"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="6dp"
+            android:layout_marginTop="20dp">
+
+            <ImageView
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:src="@drawable/ic_status_dot"
+                app:tint="@color/primary_light"
+                android:layout_marginEnd="8dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="RAPID RESPONSE SYSTEM"
+                android:textColor="@color/white"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.1"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Bottom Loading Section -->
+    <LinearLayout
+        android:id="@+id/bottomContainer"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Emergency SOS"
-        android:textSize="30sp"
-        android:textStyle="bold"
-        android:textColor="#FFFFFF"
-        app:layout_constraintTop_toBottomOf="@id/imgLogo"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="20dp"/>
-
-    <TextView
-        android:id="@+id/txtSubtitle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Stay Safe, We're Here to Help"
-        android:textSize="16sp"
-        android:textColor="#FFFFFF"
-        app:layout_constraintTop_toBottomOf="@id/txtTitle"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp"/>
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        android:layout_width="50dp"
-        android:layout_height="50dp"
-        android:layout_centerHorizontal="true"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:layout_marginBottom="48dp"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/txtSubtitle" />
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyle"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:indeterminateTint="@color/primary_light"
+            android:layout_marginBottom="12dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Initializing safety protocols..."
+            android:textColor="@color/light_gray"
+            android:textSize="12sp"
+            android:alpha="0.6"/>
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
