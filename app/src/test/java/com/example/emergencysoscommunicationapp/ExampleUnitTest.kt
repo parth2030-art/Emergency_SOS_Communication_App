@@ -1,17 +1,16 @@
 package com.example.emergencysoscommunicationapp
 
 import org.junit.Test
-
 import org.junit.Assert.*
+import java.util.Date
 
-/**
- * Example local unit test, which will execute on the development machine (host).
- *
- * See [testing documentation](http://d.android.com/tools/testing).
- */
 class ExampleUnitTest {
     @Test
     fun addition_isCorrect() {
+        val yesterday = 1784678400000L
+        val today = System.currentTimeMillis()
+        println("Yesterday: " + yesterday.toInt())
+        println("Today: " + today.toInt())
         assertEquals(4, 2 + 2)
     }
 }
