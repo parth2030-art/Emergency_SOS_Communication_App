@@ -19,7 +19,7 @@
         app:layout_constraintBottom_toTopOf="@id/bottomContainer"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_setVerticalBias="0.45">
+        app:layout_constraintVertical_bias="0.45">
 
         <!-- Glassmorphic Logo Card -->
         <com.google.android.material.card.MaterialCardView
