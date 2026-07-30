@@ -22,6 +22,14 @@ class SmsReceiver : BroadcastReceiver() {
                 val messageBody = sms.displayMessageBody ?: continue
 
                 if (messageBody.contains("SOS", ignoreCase = true)) {
+                    // Attempt to suppress the SMS broadcast for other non-default apps with lower priority.
+                    // Note: Since Android 4.4 (KitKat), this will NOT stop the default SMS app from receiving the SMS and playing its sound.
+                    try {
+                        abortBroadcast()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
                     // SOS Notification Start
                     val channelId = "SOS_CHANNEL"
                     val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -37,7 +45,7 @@ class SmsReceiver : BroadcastReceiver() {
                             vibrationPattern = longArrayOf(0, 500, 500, 500)
                             enableVibration(true)
 
-                            val soundUri = Uri.parse("android.resource://${context.packageName}/raw/alert")
+                            val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.alert}")
                             val audioAttributes = AudioAttributes.Builder()
                                 .setUsage(AudioAttributes.USAGE_ALARM)
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -57,7 +65,7 @@ class SmsReceiver : BroadcastReceiver() {
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
 
-                    val soundUri = Uri.parse("android.resource://${context.packageName}/raw/alert")
+                    val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.alert}")
 
                     val notificationBuilder = NotificationCompat.Builder(context, channelId)
                         .setSmallIcon(R.mipmap.ic_launcher)
@@ -72,7 +80,8 @@ class SmsReceiver : BroadcastReceiver() {
                         .setContentIntent(pendingIntent)
 
                     try {
-                        NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), notificationBuilder.build())
+                        val notificationId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+                        NotificationManagerCompat.from(context).notify(notificationId, notificationBuilder.build())
                     } catch (e: SecurityException) {
                         // Permission not granted for POST_NOTIFICATIONS
                     }
