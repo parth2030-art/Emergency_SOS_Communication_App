@@ -54,12 +54,27 @@ class ReceiverMapActivity : BaseActivity() {
     private fun listenForLocation() {
         locationListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                if (!snapshot.exists()) return
+                if (!snapshot.exists()) {
+                    android.util.Log.d("SOS_RECEIVER_FIREBASE", "Snapshot does not exist on path sos_locations/user_1")
+                    return
+                }
 
-                val latitude = snapshot.child("latitude").getValue(Double::class.java) ?: return
-                val longitude = snapshot.child("longitude").getValue(Double::class.java) ?: return
+                val latitude = snapshot.child("latitude").getValue(Double::class.java)
+                val longitude = snapshot.child("longitude").getValue(Double::class.java)
                 val status = snapshot.child("status").getValue(String::class.java) ?: "UNKNOWN"
-                val time = snapshot.child("time").getValue(Long::class.java) ?: System.currentTimeMillis()
+                val time = snapshot.child("time").getValue(Long::class.java)
+                    ?: snapshot.child("timestamp").getValue(Long::class.java)
+                    ?: System.currentTimeMillis()
+
+                if (latitude == null || longitude == null) {
+                    android.util.Log.w("SOS_RECEIVER_FIREBASE", "Received snapshot missing lat/lng: $snapshot")
+                    return
+                }
+
+                android.util.Log.d(
+                    "SOS_RECEIVER_FIREBASE",
+                    "Received update from Firebase: lat=$latitude, lng=$longitude, status=$status, time=$time"
+                )
 
                 val point = GeoPoint(latitude, longitude)
                 val sdf = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
@@ -73,7 +88,9 @@ class ReceiverMapActivity : BaseActivity() {
                     txtStatus.setTextColor(ContextCompat.getColor(this@ReceiverMapActivity, R.color.success_green))
                 }
 
+                // Single Marker reuse: Create only if marker is null, otherwise move existing marker
                 if (marker == null) {
+                    android.util.Log.d("SOS_RECEIVER_MARKER", "Creating initial victim marker at position ($latitude, $longitude)")
                     marker = Marker(mapView).apply {
                         title = "Victim Live Location"
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
@@ -84,11 +101,14 @@ class ReceiverMapActivity : BaseActivity() {
                         }
                     }
                     mapView.overlays.add(marker)
+                } else {
+                    val oldPosition = marker?.position
+                    android.util.Log.d("SOS_RECEIVER_MARKER", "Moving victim marker from $oldPosition to $point")
                 }
 
                 marker?.position = point
 
-                // Follow the victim marker
+                // Follow the victim marker smooth camera animation
                 if (status != "SOS_STOPPED") {
                     if (isFirstZoom) {
                         mapView.controller.setCenter(point)
@@ -102,15 +122,18 @@ class ReceiverMapActivity : BaseActivity() {
             }
 
             override fun onCancelled(error: DatabaseError) {
+                android.util.Log.e("SOS_RECEIVER_FIREBASE", "Firebase ValueEventListener cancelled: ${error.message}", error.toException())
                 txtStatus.text = "Sync Error: ${error.message}"
             }
         }
 
+        android.util.Log.d("SOS_RECEIVER_FIREBASE", "Subscribing ValueEventListener to sos_locations/user_1")
         database.addValueEventListener(locationListener!!)
     }
 
     private fun removeLocationListener() {
         if (locationListener != null) {
+            android.util.Log.d("SOS_RECEIVER_FIREBASE", "Removing ValueEventListener from sos_locations/user_1")
             database.removeEventListener(locationListener!!)
             locationListener = null
         }

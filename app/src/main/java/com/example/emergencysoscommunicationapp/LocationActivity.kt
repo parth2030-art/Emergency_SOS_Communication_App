@@ -59,6 +59,8 @@ class LocationActivity : BaseActivity() {
             latitude = location.latitude
             longitude = location.longitude
 
+            android.util.Log.d("SOS_LOCATION_ACTIVITY", "Sender location callback: lat=$latitude, lng=$longitude, accuracy=${location.accuracy}m")
+
             updateMapLocation(latitude, longitude)
         }
     }
@@ -169,7 +171,9 @@ class LocationActivity : BaseActivity() {
             }
             mapView.overlays.add(locationMarker)
             mapView.controller.setCenter(point)
+            android.util.Log.d("SOS_LOCATION_ACTIVITY", "Created marker at initial point ($latitude, $longitude)")
         } else {
+            android.util.Log.d("SOS_LOCATION_ACTIVITY", "Moving marker from ${locationMarker?.position} to $point")
             locationMarker?.position = point
             mapView.controller.animateTo(point)
         }
@@ -179,13 +183,17 @@ class LocationActivity : BaseActivity() {
         // Upload updates to Firebase Realtime Database
         if (isTracking) {
             val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
+            val timestamp = System.currentTimeMillis()
             val locationData = mapOf(
                 "latitude" to latitude,
                 "longitude" to longitude,
-                "time" to System.currentTimeMillis(),
+                "time" to timestamp,
+                "timestamp" to timestamp,
                 "status" to "SOS_ACTIVE"
             )
-            database.setValue(locationData)
+            database.setValue(locationData).addOnSuccessListener {
+                android.util.Log.d("SOS_LOCATION_ACTIVITY", "Location uploaded to Firebase: lat=$latitude, lng=$longitude")
+            }
         }
     }
 

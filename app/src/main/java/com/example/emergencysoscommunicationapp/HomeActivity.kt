@@ -230,8 +230,11 @@ class HomeActivity : AppCompatActivity() {
 
 $customMsg
 
-My Current Location:
+Initial Location Pin:
 https://maps.google.com/?q=${location.latitude},${location.longitude}
+
+View Live Movement in App:
+emergencysos://livetrack
             """.trimIndent()
 
             } else {
@@ -241,7 +244,8 @@ https://maps.google.com/?q=${location.latitude},${location.longitude}
 
 $customMsg
 
-Location unavailable.
+Location unavailable. View Live Track when online:
+emergencysos://livetrack
             """.trimIndent()
             }
 
@@ -342,34 +346,40 @@ Location unavailable.
         latitude: Double,
         longitude: Double
     ) {
-        val database =
-            FirebaseDatabase.getInstance().reference
+        val database = FirebaseDatabase.getInstance().reference
 
+        val timestamp = System.currentTimeMillis()
         val locationData = mapOf(
             "latitude" to latitude,
             "longitude" to longitude,
-            "time" to System.currentTimeMillis(),
+            "time" to timestamp,
+            "timestamp" to timestamp,
             "status" to "SOS_ACTIVE"
         )
+
+        android.util.Log.d("SOS_SENDER_FIREBASE", "Uploading to path sos_locations/user_1: lat=$latitude, lng=$longitude, time=$timestamp")
 
         database.child("sos_locations")
             .child("user_1")
             .setValue(locationData)
             .addOnSuccessListener {
+                android.util.Log.d("SOS_SENDER_FIREBASE", "Firebase upload SUCCESS: lat=$latitude, lng=$longitude")
                 Toast.makeText(
                     this,
-                    "Location uploaded to Firebase",
+                    "Live Location updated in Firebase",
                     Toast.LENGTH_SHORT
                 ).show()
             }
-            .addOnFailureListener {
+            .addOnFailureListener { e ->
+                android.util.Log.e("SOS_SENDER_FIREBASE", "Firebase upload FAILED: ${e.message}", e)
                 Toast.makeText(
                     this,
-                    "Firebase upload failed",
+                    "Firebase upload failed: ${e.message}",
                     Toast.LENGTH_SHORT
                 ).show()
             }
     }
+
     private fun startLiveLocationTracking() {
 
         if (
@@ -391,8 +401,11 @@ Location unavailable.
         val locationRequest =
             LocationRequest.Builder(
                 Priority.PRIORITY_HIGH_ACCURACY,
-                5000
-            ).build()
+                5000L
+            )
+                .setMinUpdateIntervalMillis(3000L)
+                .setMinUpdateDistanceMeters(5.0f)
+                .build()
 
         locationCallback =
             object : LocationCallback() {
@@ -401,6 +414,11 @@ Location unavailable.
                 ) {
                     val location =
                         locationResult.lastLocation ?: return
+
+                    android.util.Log.d(
+                        "SOS_SENDER_LOCATION",
+                        "Sender continuous location update received: lat=${location.latitude}, lng=${location.longitude}, accuracy=${location.accuracy}m"
+                    )
 
                     uploadLocationToFirebase(
                         location.latitude,
@@ -414,6 +432,8 @@ Location unavailable.
             locationCallback,
             Looper.getMainLooper()
         )
+
+        android.util.Log.d("SOS_SENDER_LOCATION", "Live location tracking started with interval 5000ms, minDisplacement 5m")
 
         Toast.makeText(
             this,
@@ -432,12 +452,15 @@ Location unavailable.
 
         updateSOSStatus()
 
+        android.util.Log.d("SOS_SENDER_LOCATION", "Live location tracking stopped by user")
+
         Toast.makeText(
             this,
             "SOS Stopped",
             Toast.LENGTH_SHORT
         ).show()
     }
+
     private fun updateSOSStatus() {
 
         val database = FirebaseDatabase.getInstance().reference
@@ -447,6 +470,7 @@ Location unavailable.
             .child("status")
             .setValue("SOS_STOPPED")
 
+        android.util.Log.d("SOS_SENDER_FIREBASE", "Set status to SOS_STOPPED on sos_locations/user_1")
     }
 
 }
