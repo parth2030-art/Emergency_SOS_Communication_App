@@ -1,38 +1,41 @@
 package com.example.emergencysoscommunicationapp
 
 import android.Manifest
-import android.net.Uri
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Bundle
-import android.telephony.SmsManager
-import android.widget.Button
 import android.media.MediaPlayer
-import com.google.android.gms.location.Priority
-import android.widget.ImageButton
-import android.widget.Toast
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Looper
+import android.telephony.SmsManager
+import android.util.Log
 import android.view.View
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.view.animation.AnimationSet
 import android.view.animation.ScaleAnimation
+import android.widget.Button
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.google.android.gms.location.LocationServices
-import com.google.firebase.database.FirebaseDatabase
-import android.os.Looper
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import android.os.Build
 import androidx.core.view.isVisible
-import com.google.firebase.messaging.FirebaseMessaging
+import com.google.android.gms.location.*
 import com.google.android.material.card.MaterialCardView
+import com.google.firebase.database.FirebaseDatabase
 
 class HomeActivity : AppCompatActivity() {
+
+    companion object {
+        private const val PREFS_SOS_STATE = "SOS_STATE_PREFS"
+        private const val KEY_IS_SOS_ACTIVE = "is_sos_active"
+        private const val KEY_SESSION_ID = "active_session_id"
+    }
 
     private lateinit var locationCallback: LocationCallback
 
@@ -40,7 +43,14 @@ class HomeActivity : AppCompatActivity() {
         LocationServices.getFusedLocationProviderClient(this)
     }
 
-    private var isTracking = false
+    @Volatile
+    private var isSosActive = false
+    @Volatile
+    private var isSosStarting = false
+    private var isLocationTrackingStarted = false
+    private var currentSessionId: String = ""
+
+    private var mediaPlayer: MediaPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,19 +73,8 @@ class HomeActivity : AppCompatActivity() {
             100
         )
 
-        FirebaseMessaging.getInstance().token
-            .addOnSuccessListener { token ->
-                Toast.makeText(
-                    this,
-                    "FCM Token Saved",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                FirebaseDatabase.getInstance().reference
-                    .child("fcm_tokens")
-                    .child("user_1")
-                    .setValue(token)
-            }
+        // Register multi-device FCM Token in Firebase Realtime Database under users/user_1/devices/{deviceId}
+        FcmTokenManager.registerDeviceToken(this, userId = "user_1", role = "victim")
 
         val btnSOS = findViewById<Button>(R.id.btnSOS)
         val btnContacts = findViewById<MaterialCardView>(R.id.btnContacts)
@@ -86,18 +85,12 @@ class HomeActivity : AppCompatActivity() {
         val btnSettings = findViewById<ImageButton>(R.id.btnSettings)
 
         btnSOS.setOnClickListener {
-            sendSOSMessage()
-            btnStopSOS.isVisible = true
-            startLiveLocationTracking()
+            Log.d("SOS_DEBUG", "SOS Button clicked by user")
+            activateSosOnce()
         }
 
         btnSMS.setOnClickListener {
-            startActivity(
-                Intent(
-                    this,
-                    SMSActivity::class.java
-                )
-            )
+            startActivity(Intent(this, SMSActivity::class.java))
         }
 
         btnContacts.setOnClickListener {
@@ -114,21 +107,142 @@ class HomeActivity : AppCompatActivity() {
 
         btnStopSOS.setOnClickListener {
             stopLiveLocationTracking()
-            btnStopSOS.isVisible = false
         }
 
         btnSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
+        restoreSosStateUI()
         startPulseAnimation()
         updateLocationStatusUI()
     }
 
     override fun onResume() {
         super.onResume()
+        restoreSosStateUI()
         startPulseAnimation()
         updateLocationStatusUI()
+    }
+
+    private fun restoreSosStateUI() {
+        val prefs = getSharedPreferences(PREFS_SOS_STATE, MODE_PRIVATE)
+        isSosActive = prefs.getBoolean(KEY_IS_SOS_ACTIVE, false)
+        currentSessionId = prefs.getString(KEY_SESSION_ID, "") ?: ""
+
+        val btnSOS = findViewById<Button>(R.id.btnSOS)
+        val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
+
+        if (isSosActive) {
+            btnStopSOS?.isVisible = true
+            btnSOS?.isEnabled = false
+        } else {
+            btnStopSOS?.isVisible = false
+            btnSOS?.isEnabled = true
+        }
+    }
+
+    @Synchronized
+    private fun activateSosOnce() {
+        val prefs = getSharedPreferences(PREFS_SOS_STATE, MODE_PRIVATE)
+        val activeInPrefs = prefs.getBoolean(KEY_IS_SOS_ACTIVE, false)
+
+        if (isSosActive || isSosStarting || activeInPrefs) {
+            Log.w("SOS_DEBUG", "SOS Activation ignored: Already active or starting.")
+            return
+        }
+
+        isSosStarting = true
+        val btnSOS = findViewById<Button>(R.id.btnSOS)
+        val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
+
+        btnSOS?.isEnabled = false
+        btnStopSOS?.isVisible = true
+
+        currentSessionId = "sos_${System.currentTimeMillis()}"
+
+        prefs.edit()
+            .putBoolean(KEY_IS_SOS_ACTIVE, true)
+            .putString(KEY_SESSION_ID, currentSessionId)
+            .apply()
+
+        isSosActive = true
+        isSosStarting = false
+
+        Log.d("SOS_DEBUG", "SOS session created: $currentSessionId. Starting dispatch.")
+
+        // 1. Send SMS to unique emergency contacts
+        sendEmergencySmsOnce()
+
+        // 2. Start local alarm sound ONCE on victim device
+        startSosAlarmOnce()
+
+        // 3. Start continuous location updates (uploads to Firebase, triggering Cloud Function for FCM notifications)
+        startLiveLocationTracking()
+    }
+
+    private fun normalizePhone(phone: String): String {
+        return phone.replace(Regex("[^0-9+]"), "")
+    }
+
+    private fun sendEmergencySmsOnce() {
+        val contacts = ContactStorage.getContacts(this)
+
+        if (contacts.isEmpty()) {
+            Toast.makeText(this, "No Contacts Saved", Toast.LENGTH_SHORT).show()
+            Log.w("SOS_NOTIFICATION", "No contacts available to send SMS")
+            return
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Location Permission Required", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val uniqueContacts = contacts.distinctBy { normalizePhone(it.phone) }
+
+        fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { location ->
+                val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
+                val customMsg = prefs.getString("custom_msg", "I need help immediately.") ?: "I need help immediately."
+
+                val message = if (location != null) {
+                    uploadLocationToFirebase(location.latitude, location.longitude)
+                    """
+🚨 EMERGENCY SOS 🚨
+
+$customMsg
+
+Initial Location Pin:
+https://maps.google.com/?q=${location.latitude},${location.longitude}
+
+View Live Movement in App:
+emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
+                    """.trimIndent()
+                } else {
+                    """
+🚨 EMERGENCY SOS 🚨
+
+$customMsg
+
+Location unavailable. View Live Track when online:
+emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
+                    """.trimIndent()
+                }
+
+                val smsManager = SmsManager.getDefault()
+                for (contact in uniqueContacts) {
+                    try {
+                        val parts = smsManager.divideMessage(message)
+                        smsManager.sendMultipartTextMessage(contact.phone, null, parts, null, null)
+                        Log.d("SOS_NOTIFICATION", "SMS sent successfully to unique contact: ${contact.phone}")
+                    } catch (e: Exception) {
+                        Log.e("SOS_NOTIFICATION", "Failed to send SMS to ${contact.phone}: ${e.message}")
+                    }
+                }
+
+                Toast.makeText(this, "SOS Sent To ${uniqueContacts.size} Contact(s)", Toast.LENGTH_LONG).show()
+            }
     }
 
     private fun startPulseAnimation() {
@@ -157,12 +271,12 @@ class HomeActivity : AppCompatActivity() {
     private fun updateLocationStatusUI() {
         val txtLocationStatus = findViewById<TextView>(R.id.txtLocationStatus) ?: return
         val imgStatusDot = findViewById<ImageView>(R.id.imgStatusDot) ?: return
-        
+
         val isGranted = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-        
+
         if (isGranted) {
             txtLocationStatus.text = "Location Enabled"
             imgStatusDot.imageTintList = android.content.res.ColorStateList.valueOf(
@@ -176,256 +290,94 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
-    private fun sendSOSMessage() {
-
-        val contacts = ContactStorage.getContacts(this)
-
-        if (contacts.isEmpty()) {
-
-            Toast.makeText(
-                this,
-                "No Contacts Saved",
-                Toast.LENGTH_SHORT
-            ).show()
-
+    private fun startSosAlarmOnce() {
+        if (mediaPlayer?.isPlaying == true) {
+            Log.d("SOS_SOUND", "Alarm already playing. Skipping duplicate start.")
             return
         }
 
-        if (
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-
-            Toast.makeText(
-                this,
-                "Location Permission Required",
-                Toast.LENGTH_SHORT
-            ).show()
-
-            return
-        }
-
-        val fusedLocationClient =
-            LocationServices.getFusedLocationProviderClient(this)
-
-        fusedLocationClient.getCurrentLocation(
-            Priority.PRIORITY_HIGH_ACCURACY,
-            null
-        ).addOnSuccessListener { location ->
-
-            val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
-            val customMsg = prefs.getString("custom_msg", "I need help immediately.") ?: "I need help immediately."
-
-            val message = if (location != null) {
-
-                uploadLocationToFirebase(
-                    location.latitude,
-                    location.longitude
-                )
-
-                """
-🚨 EMERGENCY SOS 🚨
-
-$customMsg
-
-Initial Location Pin:
-https://maps.google.com/?q=${location.latitude},${location.longitude}
-
-View Live Movement in App:
-emergencysos://livetrack
-            """.trimIndent()
-
-            } else {
-
-                """
-🚨 EMERGENCY SOS 🚨
-
-$customMsg
-
-Location unavailable. View Live Track when online:
-emergencysos://livetrack
-            """.trimIndent()
+        try {
+            mediaPlayer = MediaPlayer.create(applicationContext, R.raw.alert).apply {
+                isLooping = false
+                start()
             }
+            Log.d("SOS_SOUND", "Started local SOS alarm sound once on victim device.")
+        } catch (e: Exception) {
+            Log.e("SOS_SOUND", "Error starting SOS alarm sound: ${e.message}")
+        }
+    }
 
-            val smsManager = SmsManager.getDefault()
-
-            for (contact in contacts) {
-
-                try {
-
-                    val parts =
-                        smsManager.divideMessage(message)
-
-                    smsManager.sendMultipartTextMessage(
-                        contact.phone,
-                        null,
-                        parts,
-                        null,
-                        null
-                    )
-
-                } catch (e: Exception) {
-
-                    Toast.makeText(
-                        this,
-                        "Failed: ${contact.phone}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+    private fun stopSosAlarm() {
+        try {
+            mediaPlayer?.run {
+                if (isPlaying) stop()
+                release()
             }
-
-            Toast.makeText(
-                this,
-                "SOS Sent To ${contacts.size} Contact(s)",
-                Toast.LENGTH_LONG
-            ).show()
-
-            playAlertSound()
+        } catch (e: Exception) {
+            Log.e("SOS_SOUND", "Error stopping SOS alarm sound: ${e.message}")
         }
+        mediaPlayer = null
+        Log.d("SOS_SOUND", "Stopped SOS alarm sound.")
     }
 
-    private fun callEmergencyContact() {
-
-        val contacts = ContactStorage.getContacts(this)
-
-        if (contacts.isEmpty()) {
-
-            Toast.makeText(
-                this,
-                "No Emergency Contact Saved",
-                Toast.LENGTH_SHORT
-            ).show()
-
-            return
-        }
-
-        val phoneNumber = contacts[0].phone
-
-        if (
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.CALL_PHONE
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-
-            Toast.makeText(
-                this,
-                "Call Permission Required",
-                Toast.LENGTH_SHORT
-            ).show()
-
-            return
-        }
-
-        val intent = Intent(
-            Intent.ACTION_DIAL,
-            Uri.parse("tel:$phoneNumber")
-        )
-
-        startActivity(intent)
-    }
-
-    private fun playAlertSound() {
-
-        val mediaPlayer =
-            MediaPlayer.create(
-                this,
-                R.raw.alert
-            )
-
-        mediaPlayer.start()
-
-        mediaPlayer.setOnCompletionListener {
-            it.release()
-        }
-    }
-
-    private fun uploadLocationToFirebase(
-        latitude: Double,
-        longitude: Double
-    ) {
+    /**
+     * Silent location upload to Firebase Realtime Database.
+     * Triggers Firebase Cloud Function to send FCM notifications to guardians.
+     */
+    private fun uploadLocationToFirebase(latitude: Double, longitude: Double) {
         val database = FirebaseDatabase.getInstance().reference
-
         val timestamp = System.currentTimeMillis()
+
         val locationData = mapOf(
             "latitude" to latitude,
             "longitude" to longitude,
             "time" to timestamp,
             "timestamp" to timestamp,
-            "status" to "SOS_ACTIVE"
+            "status" to if (isSosActive) "SOS_ACTIVE" else "SOS_STOPPED",
+            "sessionId" to currentSessionId,
+            "senderUserId" to "user_1"
         )
 
-        android.util.Log.d("SOS_SENDER_FIREBASE", "Uploading to path sos_locations/user_1: lat=$latitude, lng=$longitude, time=$timestamp")
+        Log.d("SOS_FIREBASE", "Sender location update to path=sos_locations/user_1: lat=$latitude, lng=$longitude, status=${locationData["status"]}")
 
         database.child("sos_locations")
             .child("user_1")
             .setValue(locationData)
             .addOnSuccessListener {
-                android.util.Log.d("SOS_SENDER_FIREBASE", "Firebase upload SUCCESS: lat=$latitude, lng=$longitude")
-                Toast.makeText(
-                    this,
-                    "Live Location updated in Firebase",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Log.d("SOS_FIREBASE", "Firebase location update SUCCESS")
             }
             .addOnFailureListener { e ->
-                android.util.Log.e("SOS_SENDER_FIREBASE", "Firebase upload FAILED: ${e.message}", e)
-                Toast.makeText(
-                    this,
-                    "Firebase upload failed: ${e.message}",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Log.e("SOS_FIREBASE", "Firebase location update FAILED: ${e.message}")
             }
     }
 
     private fun startLiveLocationTracking() {
-
-        if (
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            Toast.makeText(
-                this,
-                "Location Permission Required",
-                Toast.LENGTH_SHORT
-            ).show()
+        if (isLocationTrackingStarted) {
+            Log.d("SOS_DEBUG", "Location tracking updates already active. Skipping duplicate request.")
             return
         }
 
-        isTracking = true
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
 
-        val locationRequest =
-            LocationRequest.Builder(
-                Priority.PRIORITY_HIGH_ACCURACY,
-                5000L
-            )
-                .setMinUpdateIntervalMillis(3000L)
-                .setMinUpdateDistanceMeters(5.0f)
-                .build()
+        isLocationTrackingStarted = true
 
-        locationCallback =
-            object : LocationCallback() {
-                override fun onLocationResult(
-                    locationResult: LocationResult
-                ) {
-                    val location =
-                        locationResult.lastLocation ?: return
+        val locationRequest = LocationRequest.Builder(
+            Priority.PRIORITY_HIGH_ACCURACY,
+            5000L
+        )
+            .setMinUpdateIntervalMillis(3000L)
+            .setMinUpdateDistanceMeters(5.0f)
+            .build()
 
-                    android.util.Log.d(
-                        "SOS_SENDER_LOCATION",
-                        "Sender continuous location update received: lat=${location.latitude}, lng=${location.longitude}, accuracy=${location.accuracy}m"
-                    )
-
-                    uploadLocationToFirebase(
-                        location.latitude,
-                        location.longitude
-                    )
-                }
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                val location = locationResult.lastLocation ?: return
+                Log.d("SOS_DEBUG", "Sender continuous update: lat=${location.latitude}, lng=${location.longitude}")
+                uploadLocationToFirebase(location.latitude, location.longitude)
             }
+        }
 
         fusedLocationClient.requestLocationUpdates(
             locationRequest,
@@ -433,44 +385,49 @@ emergencysos://livetrack
             Looper.getMainLooper()
         )
 
-        android.util.Log.d("SOS_SENDER_LOCATION", "Live location tracking started with interval 5000ms, minDisplacement 5m")
-
-        Toast.makeText(
-            this,
-            "Live Tracking Started",
-            Toast.LENGTH_SHORT
-        ).show()
+        Log.d("SOS_DEBUG", "FusedLocationProviderClient started continuous tracking updates.")
     }
 
     private fun stopLiveLocationTracking() {
-
-        if (::locationCallback.isInitialized) {
+        if (::locationCallback.isInitialized && isLocationTrackingStarted) {
             fusedLocationClient.removeLocationUpdates(locationCallback)
+            isLocationTrackingStarted = false
         }
 
-        isTracking = false
+        isSosActive = false
+        isSosStarting = false
 
-        updateSOSStatus()
+        stopSosAlarm()
 
-        android.util.Log.d("SOS_SENDER_LOCATION", "Live location tracking stopped by user")
+        getSharedPreferences(PREFS_SOS_STATE, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_IS_SOS_ACTIVE, false)
+            .remove(KEY_SESSION_ID)
+            .apply()
 
-        Toast.makeText(
-            this,
-            "SOS Stopped",
-            Toast.LENGTH_SHORT
-        ).show()
+        updateSOSStatusInFirebase()
+
+        val btnSOS = findViewById<Button>(R.id.btnSOS)
+        val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
+
+        btnSOS?.isEnabled = true
+        btnStopSOS?.isVisible = false
+
+        Log.d("SOS_DEBUG", "SOS session stopped successfully.")
+        Toast.makeText(this, "SOS Stopped", Toast.LENGTH_SHORT).show()
     }
 
-    private fun updateSOSStatus() {
-
+    private fun updateSOSStatusInFirebase() {
         val database = FirebaseDatabase.getInstance().reference
-
         database.child("sos_locations")
             .child("user_1")
             .child("status")
             .setValue("SOS_STOPPED")
-
-        android.util.Log.d("SOS_SENDER_FIREBASE", "Set status to SOS_STOPPED on sos_locations/user_1")
+        Log.d("SOS_FIREBASE", "Firebase status set to SOS_STOPPED")
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        stopSosAlarm()
+    }
 }

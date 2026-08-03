@@ -10,10 +10,16 @@ import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
 import android.provider.Telephony
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
 class SmsReceiver : BroadcastReceiver() {
+
+    companion object {
+        private const val PREFS_SMS_DEDUPE = "SMS_DEDUPE_PREFS"
+        private const val DEDUPE_WINDOW_MS = 10000L
+    }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
@@ -22,16 +28,26 @@ class SmsReceiver : BroadcastReceiver() {
                 val messageBody = sms.displayMessageBody ?: continue
 
                 if (messageBody.contains("SOS", ignoreCase = true)) {
-                    // Attempt to suppress the SMS broadcast for other non-default apps with lower priority.
-                    // Note: Since Android 4.4 (KitKat), this will NOT stop the default SMS app from receiving the SMS and playing its sound.
+                    Log.d("SOS_NAVIGATION", "Incoming SMS SOS alert detected: $messageBody")
+
                     try {
                         abortBroadcast()
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        Log.w("SOS_NAVIGATION", "Cannot abort broadcast: ${e.message}")
                     }
 
-                    // SOS Notification Start
-                    val channelId = "SOS_CHANNEL"
+                    val prefs = context.getSharedPreferences(PREFS_SMS_DEDUPE, Context.MODE_PRIVATE)
+                    val lastTime = prefs.getLong("last_sms_time", 0L)
+                    val currentTime = System.currentTimeMillis()
+
+                    if (currentTime - lastTime < DEDUPE_WINDOW_MS) {
+                        Log.d("SOS_NAVIGATION", "Duplicate SMS notification suppressed (time delta: ${currentTime - lastTime}ms)")
+                        return
+                    }
+
+                    prefs.edit().putLong("last_sms_time", currentTime).apply()
+
+                    val channelId = "sos_alert_channel"
                     val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -41,6 +57,7 @@ class SmsReceiver : BroadcastReceiver() {
                             channelName,
                             NotificationManager.IMPORTANCE_HIGH
                         ).apply {
+                            description = "Emergency SOS Alerts"
                             lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
                             vibrationPattern = longArrayOf(0, 500, 500, 500)
                             enableVibration(true)
@@ -55,13 +72,17 @@ class SmsReceiver : BroadcastReceiver() {
                         notificationManager.createNotificationChannel(channel)
                     }
 
-                    val openIntent = Intent(context, HomeActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                    val receiverIntent = Intent(context, ReceiverMapActivity::class.java).apply {
+                        action = "com.example.emergencysoscommunicationapp.OPEN_LIVE_TRACKING"
+                        data = Uri.parse("emergencysos://livetrack?senderUserId=user_1")
+                        putExtra("senderUserId", "user_1")
+                        flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                     }
+
                     val pendingIntent = PendingIntent.getActivity(
                         context,
-                        0,
-                        openIntent,
+                        FirebaseMessagingService.ACTIVE_SOS_NOTIFICATION_ID,
+                        receiverIntent,
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
 
@@ -69,7 +90,7 @@ class SmsReceiver : BroadcastReceiver() {
 
                     val notificationBuilder = NotificationCompat.Builder(context, channelId)
                         .setSmallIcon(R.mipmap.ic_launcher)
-                        .setContentTitle("🚨 Emergency SOS Alert")
+                        .setContentTitle("🚨 Emergency SOS Alert Received")
                         .setContentText(messageBody)
                         .setStyle(NotificationCompat.BigTextStyle().bigText(messageBody))
                         .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -80,12 +101,14 @@ class SmsReceiver : BroadcastReceiver() {
                         .setContentIntent(pendingIntent)
 
                     try {
-                        val notificationId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
-                        NotificationManagerCompat.from(context).notify(notificationId, notificationBuilder.build())
+                        NotificationManagerCompat.from(context).notify(
+                            FirebaseMessagingService.ACTIVE_SOS_NOTIFICATION_ID,
+                            notificationBuilder.build()
+                        )
+                        Log.d("SOS_NAVIGATION", "SMS Receiver posted notification targeting ReceiverMapActivity")
                     } catch (e: SecurityException) {
-                        // Permission not granted for POST_NOTIFICATIONS
+                        Log.e("SOS_NAVIGATION", "Permission missing for POST_NOTIFICATIONS: ${e.message}")
                     }
-                    // SOS Notification End
                 }
             }
         }

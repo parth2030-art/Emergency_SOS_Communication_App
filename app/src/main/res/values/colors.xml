@@ -26,6 +26,7 @@
     <color name="success_green_bg">#E8F5E9</color>
     <color name="error_red">#D32F2F</color>
     <color name="error_red_bg">#FFEBEE</color>
+    <color name="guardian_blue">#1976D2</color>
 
     <!-- Glassmorphic overlays -->
     <color name="glass_white_overlay">#33FFFFFF</color>

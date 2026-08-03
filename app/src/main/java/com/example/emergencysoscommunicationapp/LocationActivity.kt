@@ -1,11 +1,11 @@
 package com.example.emergencysoscommunicationapp
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
+import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.os.Looper
+import android.util.Log
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
@@ -15,7 +15,6 @@ import com.google.android.gms.location.*
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.firebase.database.FirebaseDatabase
-import org.osmdroid.config.Configuration
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
@@ -41,15 +40,13 @@ class LocationActivity : BaseActivity() {
     private var latitude = 0.0
     private var longitude = 0.0
 
-    // High accuracy updates: 5 seconds interval, 3 seconds fastest, 5 meters minimum displacement
-    private val locationRequest =
-        LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY,
-            5000L
-        )
-            .setMinUpdateIntervalMillis(3000L)
-            .setMinUpdateDistanceMeters(5.0f)
-            .build()
+    private val locationRequest = LocationRequest.Builder(
+        Priority.PRIORITY_HIGH_ACCURACY,
+        5000L
+    )
+        .setMinUpdateIntervalMillis(3000L)
+        .setMinUpdateDistanceMeters(5.0f)
+        .build()
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(locationResult: LocationResult) {
@@ -59,7 +56,7 @@ class LocationActivity : BaseActivity() {
             latitude = location.latitude
             longitude = location.longitude
 
-            android.util.Log.d("SOS_LOCATION_ACTIVITY", "Sender location callback: lat=$latitude, lng=$longitude, accuracy=${location.accuracy}m")
+            Log.d("SOS_DEBUG", "LocationActivity callback: lat=$latitude, lng=$longitude")
 
             updateMapLocation(latitude, longitude)
         }
@@ -91,7 +88,6 @@ class LocationActivity : BaseActivity() {
     }
 
     private fun setupMap() {
-        // Enforce explicit secure HTTPS tile provider
         mapView.setTileSource(MapHelper.getOsmTileSource())
         mapView.setMultiTouchControls(true)
         mapView.controller.setZoom(17.0)
@@ -127,6 +123,7 @@ class LocationActivity : BaseActivity() {
             locationCallback,
             Looper.getMainLooper()
         )
+        Log.d("SOS_DEBUG", "LocationActivity started location updates.")
     }
 
     private fun stopLiveLocationSharing() {
@@ -141,46 +138,47 @@ class LocationActivity : BaseActivity() {
             ContextCompat.getColor(this, R.color.error_red)
         )
 
-        // Upload status stopped to Firebase
         val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
         database.child("status").setValue("SOS_STOPPED")
 
+        Log.d("SOS_FIREBASE", "LocationActivity set status to SOS_STOPPED")
         Toast.makeText(this, "Live Location Sharing Stopped", Toast.LENGTH_SHORT).show()
         
-        // Finish activity after successfully stopping
         finish()
     }
 
     private fun updateMapLocation(latitude: Double, longitude: Double) {
+        if (!latitude.isFinite() || !longitude.isFinite()) return
         val point = GeoPoint(latitude, longitude)
 
-        // Update UI
         val sdf = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
         txtLastUpdated.text = "Last Updated: ${sdf.format(Date())}"
 
-        // Update Map Marker (single marker, moved instead of recreated)
         if (locationMarker == null) {
+            var iconDrawable: Drawable? = ContextCompat.getDrawable(this, R.drawable.ic_location)
+            if (iconDrawable == null || iconDrawable.intrinsicWidth <= 0 || iconDrawable.intrinsicHeight <= 0) {
+                iconDrawable = ContextCompat.getDrawable(this, org.osmdroid.library.R.drawable.marker_default)
+            }
+
             locationMarker = Marker(mapView).apply {
-                title = "My Live Location"
+                position = point
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                val drawable = ContextCompat.getDrawable(this@LocationActivity, R.drawable.ic_location)
-                if (drawable != null) {
-                    drawable.setTint(ContextCompat.getColor(this@LocationActivity, R.color.primary))
-                    icon = drawable
+                title = "My Live Location"
+                if (iconDrawable != null) {
+                    icon = iconDrawable
                 }
             }
             mapView.overlays.add(locationMarker)
             mapView.controller.setCenter(point)
-            android.util.Log.d("SOS_LOCATION_ACTIVITY", "Created marker at initial point ($latitude, $longitude)")
+            Log.d("SOS_MARKER", "LocationActivity created initial marker overlay. Total overlays: ${mapView.overlays.size}")
         } else {
-            android.util.Log.d("SOS_LOCATION_ACTIVITY", "Moving marker from ${locationMarker?.position} to $point")
+            Log.d("SOS_MARKER", "LocationActivity moving marker from ${locationMarker?.position} to $point")
             locationMarker?.position = point
             mapView.controller.animateTo(point)
         }
 
         mapView.invalidate()
 
-        // Upload updates to Firebase Realtime Database
         if (isTracking) {
             val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
             val timestamp = System.currentTimeMillis()
@@ -189,15 +187,15 @@ class LocationActivity : BaseActivity() {
                 "longitude" to longitude,
                 "time" to timestamp,
                 "timestamp" to timestamp,
-                "status" to "SOS_ACTIVE"
+                "status" to "SOS_ACTIVE",
+                "senderUserId" to "user_1"
             )
             database.setValue(locationData).addOnSuccessListener {
-                android.util.Log.d("SOS_LOCATION_ACTIVITY", "Location uploaded to Firebase: lat=$latitude, lng=$longitude")
+                Log.d("SOS_FIREBASE", "LocationActivity uploaded location: lat=$latitude, lng=$longitude")
             }
         }
     }
 
-    // OSMDroid Lifecycle management
     override fun onResume() {
         super.onResume()
         mapView.onResume()
