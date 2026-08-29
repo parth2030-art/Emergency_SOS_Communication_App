@@ -1,45 +1,58 @@
 package com.example.emergencysoscommunicationapp
 
+import android.net.Uri
+import android.util.Log
 import org.osmdroid.tileprovider.tilesource.ITileSource
-import org.osmdroid.tileprovider.tilesource.XYTileSource
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
+import org.osmdroid.tileprovider.tilesource.TileSourcePolicy
+import org.osmdroid.util.MapTileIndex
 
 object MapHelper {
-    
+
+    private const val TAG = "MapHelper"
+
     /**
-     * Configures the production tile provider for the application.
-     * 
-     * We use CARTO Positron by default because:
-     * 1. It provides a clean, premium light-gray basemap that perfectly fits our emergency red/gray theme.
-     * 2. It has very reliable public delivery endpoints with standard application permission terms.
-     * 3. It serves tiles securely over HTTPS, bypassing strict OSM policy blocks.
+     * Stadia Maps OSM Bright raster tiles.
+     *
+     * The underlying map data is OpenStreetMap-derived.
+     *
+     * Stadia Maps requires an API key for Android/mobile applications.
      */
     fun getOsmTileSource(): ITileSource {
-        // Primary Option: CARTO Positron light theme
-        return XYTileSource(
-            "CartoPositron",
+
+        val apiKey = BuildConfig.STADIA_MAPS_API_KEY.trim()
+
+        if (apiKey.isEmpty()) {
+            Log.e(
+                TAG,
+                "STADIA_MAPS_API_KEY is missing. Check local.properties."
+            )
+        }
+
+        return object : OnlineTileSourceBase(
+            "StadiaMapsOSMBright",
             0,
             20,
             256,
             ".png",
             arrayOf(
-                "https://basemaps.cartocdn.com/rastertiles/light_all/",
-                "https://a.basemaps.cartocdn.com/rastertiles/light_all/",
-                "https://b.basemaps.cartocdn.com/rastertiles/light_all/",
-                "https://c.basemaps.cartocdn.com/rastertiles/light_all/",
-                "https://d.basemaps.cartocdn.com/rastertiles/light_all/"
+                "https://tiles.stadiamaps.com/tiles/osm_bright/"
+            ),
+            "© OpenStreetMap contributors",
+            TileSourcePolicy(
+                2,
+                TileSourcePolicy.FLAG_NO_BULK
             )
-        )
+        ) {
 
-        /*
-        // Alternative Option: Official OpenStreetMap HTTPS tiles
-        return XYTileSource(
-            "OpenStreetMap",
-            0,
-            19,
-            256,
-            ".png",
-            arrayOf("https://tile.openstreetmap.org/")
-        )
-        */
+            override fun getTileURLString(mapTileIndex: Long): String {
+
+                val zoom = MapTileIndex.getZoom(mapTileIndex)
+                val x = MapTileIndex.getX(mapTileIndex)
+                val y = MapTileIndex.getY(mapTileIndex)
+
+                return "${getBaseUrl()}$zoom/$x/$y.png?api_key=${Uri.encode(apiKey)}"
+            }
+        }
     }
 }

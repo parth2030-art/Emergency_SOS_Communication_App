@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.google.services)
 }
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use { localProperties.load(it) }
+}
+val stadiaApiKey = localProperties.getProperty("STADIA_MAPS_API_KEY") ?: "YOUR_STADIA_MAPS_API_KEY"
 
 android {
     namespace = "com.example.emergencysoscommunicationapp"
@@ -17,6 +26,8 @@ android {
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "STADIA_MAPS_API_KEY", "\"$stadiaApiKey\"")
     }
 
     buildTypes {

@@ -365,33 +365,25 @@ class ReceiverMapActivity : AppCompatActivity() {
     }
 
     private fun adjustMapZoomAndBounds() {
+        if (isFirstZoomDone) return
+
         val victimPos = victimMarker?.position
         val guardianPos = guardianMarker?.position
 
         try {
             if (victimPos != null && guardianPos != null) {
+                isFirstZoomDone = true
                 val points = arrayListOf(victimPos, guardianPos)
                 val boundingBox = BoundingBox.fromGeoPoints(points)
-                if (!isFirstZoomDone) {
-                    isFirstZoomDone = true
-                    mapView.zoomToBoundingBox(boundingBox, true, 120)
-                } else {
-                    mapView.zoomToBoundingBox(boundingBox, true, 120)
-                }
+                mapView.zoomToBoundingBox(boundingBox, true, 120)
             } else if (victimPos != null) {
-                if (!isFirstZoomDone) {
-                    isFirstZoomDone = true
-                    mapView.controller.setZoom(17.0)
-                    mapView.controller.setCenter(victimPos)
-                } else {
-                    mapView.controller.animateTo(victimPos)
-                }
+                isFirstZoomDone = true
+                mapView.controller.setZoom(17.0)
+                mapView.controller.setCenter(victimPos)
             } else if (guardianPos != null) {
-                if (!isFirstZoomDone) {
-                    isFirstZoomDone = true
-                    mapView.controller.setZoom(17.0)
-                    mapView.controller.setCenter(guardianPos)
-                }
+                isFirstZoomDone = true
+                mapView.controller.setZoom(17.0)
+                mapView.controller.setCenter(guardianPos)
             }
         } catch (e: Exception) {
             Log.e("SOS_MARKER", "Error calculating BoundingBox or zooming: ${e.message}", e)

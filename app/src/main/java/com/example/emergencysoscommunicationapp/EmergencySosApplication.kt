@@ -8,16 +8,14 @@ class EmergencySosApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        val sharedPrefs = getSharedPreferences("osmdroid", MODE_PRIVATE)
         val configuration = Configuration.getInstance()
 
-        // Load OSMDroid settings from SharedPreferences
-        configuration.load(
-            applicationContext,
-            getSharedPreferences("osmdroid", MODE_PRIVATE)
-        )
-
-        // Set a policy-compliant User-Agent including package details and contact information
+        // Set policy-compliant User-Agent identifying the application first
         configuration.userAgentValue =
-            "EmergencySOSCommunicationApp/1.0 (com.example.emergencysoscommunicationapp; contact: parth2030@example.com)"
+            "EmergencySOSCommunicationApp/1.0 (com.example.emergencysoscommunicationapp; contact: figmaparth0@gmail.com)"
+
+        // Load OSMDroid settings safely from SharedPreferences
+        configuration.load(applicationContext, sharedPrefs)
     }
 }
