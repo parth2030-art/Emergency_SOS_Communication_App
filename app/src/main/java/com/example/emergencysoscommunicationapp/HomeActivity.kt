@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.media.MediaPlayer
@@ -13,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.CountDownTimer
+import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -35,6 +37,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.android.gms.location.*
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.firebase.database.FirebaseDatabase
@@ -48,6 +51,7 @@ class HomeActivity : AppCompatActivity() {
         private const val PREFS_SOS_STATE = "SOS_STATE_PREFS"
         private const val KEY_IS_SOS_ACTIVE = "is_sos_active"
         private const val KEY_SESSION_ID = "active_session_id"
+        private const val PERMISSION_REQUEST_SOS_RECORD_AUDIO = 301
     }
 
     private val fusedLocationClient by lazy {
@@ -67,13 +71,56 @@ class HomeActivity : AppCompatActivity() {
     private var countdownDialog: AlertDialog? = null
     private var countdownTimer: CountDownTimer? = null
     private var isReceiverRegistered = false
+    private var isRecordingReceiverRegistered = false
+    private var isDeliveryReceiverRegistered = false
+
+    private val recordingCountdownHandler = Handler(Looper.getMainLooper())
+    private val recordingCountdownRunnable = object : Runnable {
+        override fun run() {
+            if (AudioRecordingManager.isRecording) {
+                val elapsed = (System.currentTimeMillis() - AudioRecordingManager.recordingStartTime) / 1000
+                val remaining = (20 - elapsed).coerceAtLeast(0).toInt()
+                val btnStop = findViewById<MaterialButton>(R.id.btnStopRecordingHome)
+                btnStop?.text = "Stop Recording (${remaining}s)"
+                if (remaining > 0) {
+                    recordingCountdownHandler.postDelayed(this, 1000)
+                }
+            } else {
+                hideStopRecordingButton()
+            }
+        }
+    }
 
     private val sosStoppedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == SosStateManager.ACTION_SOS_STOPPED) {
                 Log.d("HomeActivity", "Received ACTION_SOS_STOPPED broadcast. Restoring UI.")
+                if (AudioRecordingManager.isRecording) {
+                    val savedFile = AudioRecordingManager.stopRecording(this@HomeActivity)
+                    if (savedFile != null) {
+                        Toast.makeText(this@HomeActivity, "Emergency audio finalized & delivering to guardians...", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                hideStopRecordingButton()
                 restoreSosStateUI()
                 stopSosAlarm()
+                updateAudioDeliveryUI()
+            }
+        }
+    }
+
+    private val recordingStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioRecordingManager.ACTION_RECORDING_STATE_CHANGED) {
+                updateAudioDeliveryUI()
+            }
+        }
+    }
+
+    private val deliveryStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioDeliveryManager.ACTION_DELIVERY_STATE_CHANGED) {
+                updateAudioDeliveryUI()
             }
         }
     }
@@ -81,6 +128,8 @@ class HomeActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_home)
+
+        AudioDeliveryManager.init(this)
 
         val requiredPermissions = mutableListOf(
             Manifest.permission.SEND_SMS,
@@ -122,10 +171,17 @@ class HomeActivity : AppCompatActivity() {
         val btnLocation = findViewById<MaterialCardView>(R.id.btnLocation)
         val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
         val btnSettings = findViewById<ImageButton>(R.id.btnSettings)
+        val btnRecordings = findViewById<ImageButton>(R.id.btnRecordings)
+        val btnStopRecordingHome = findViewById<MaterialButton>(R.id.btnStopRecordingHome)
+        val audioDeliveryStatusContainer = findViewById<View>(R.id.audioDeliveryStatusContainer)
 
         btnSOS.setOnClickListener {
             Log.d("SOS_DEBUG", "SOS Button clicked by user")
             activateSosOnce()
+        }
+
+        btnStopRecordingHome?.setOnClickListener {
+            stopSosAudioRecordingEarly()
         }
 
         btnSMS.setOnClickListener {
@@ -152,9 +208,24 @@ class HomeActivity : AppCompatActivity() {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
+        btnRecordings.setOnClickListener {
+            startActivity(Intent(this, AudioRecordingsActivity::class.java))
+        }
+
+        audioDeliveryStatusContainer?.setOnClickListener {
+            if (AudioDeliveryManager.currentState == AudioDeliveryManager.DeliveryState.FAILED ||
+                AudioDeliveryManager.currentState == AudioDeliveryManager.DeliveryState.PENDING) {
+                Toast.makeText(this, "Retrying recording upload to guardians...", Toast.LENGTH_SHORT).show()
+                AudioDeliveryManager.retryPendingUpload(this)
+            } else {
+                startActivity(Intent(this, AudioRecordingsActivity::class.java))
+            }
+        }
+
         restoreSosStateUI()
         startPulseAnimation()
         updateLocationStatusUI()
+        updateAudioDeliveryUI()
     }
 
     override fun onRequestPermissionsResult(
@@ -165,6 +236,18 @@ class HomeActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 100) {
             updateLocationStatusUI()
+        } else if (requestCode == PERMISSION_REQUEST_SOS_RECORD_AUDIO) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Log.d("HomeActivity", "Microphone permission granted by user on SOS trigger. Starting 20s recording...")
+                if (isSosActive) {
+                    startSosAudioRecording(currentSessionId)
+                }
+            } else {
+                Log.w("HomeActivity", "Microphone permission denied by user on SOS trigger.")
+                AudioDeliveryManager.setMicrophoneDeniedState(this)
+                updateAudioDeliveryUI()
+                Toast.makeText(this, "Microphone permission denied. Emergency audio recording skipped.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -173,6 +256,7 @@ class HomeActivity : AppCompatActivity() {
         restoreSosStateUI()
         startPulseAnimation()
         updateLocationStatusUI()
+        updateAudioDeliveryUI()
 
         // Register broadcast receiver to catch STOP SOS actions from the Foreground Service notification
         val filter = IntentFilter(SosStateManager.ACTION_SOS_STOPPED)
@@ -186,6 +270,34 @@ class HomeActivity : AppCompatActivity() {
             isReceiverRegistered = true
         } catch (e: Exception) {
             Log.e("HomeActivity", "Error registering sosStoppedReceiver: ${e.message}")
+        }
+
+        // Register broadcast receiver for audio recording state changes
+        val recFilter = IntentFilter(AudioRecordingManager.ACTION_RECORDING_STATE_CHANGED)
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                recordingStateReceiver,
+                recFilter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            isRecordingReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.e("HomeActivity", "Error registering recordingStateReceiver: ${e.message}")
+        }
+
+        // Register broadcast receiver for audio delivery state changes
+        val delFilter = IntentFilter(AudioDeliveryManager.ACTION_DELIVERY_STATE_CHANGED)
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                deliveryStateReceiver,
+                delFilter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            isDeliveryReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.e("HomeActivity", "Error registering deliveryStateReceiver: ${e.message}")
         }
 
         // If tracking was stopped from notification or LocationActivity, clean up siren
@@ -206,9 +318,13 @@ class HomeActivity : AppCompatActivity() {
         }
 
         // Sync pending offline locations if internet is available
-        if (NetworkMonitor.isInternetAvailable(this) && OfflineLocationQueue.hasQueuedLocations(this)) {
-            Log.d("HomeActivity", "Pending offline locations detected on resume. Syncing to Firebase.")
-            OfflineLocationQueue.syncQueueToFirebase(this)
+        if (NetworkMonitor.isInternetAvailable(this)) {
+            if (OfflineLocationQueue.hasQueuedLocations(this)) {
+                Log.d("HomeActivity", "Pending offline locations detected on resume. Syncing to Firebase.")
+                OfflineLocationQueue.syncQueueToFirebase(this)
+            }
+            // Also retry pending audio recording upload if available
+            AudioDeliveryManager.retryPendingUpload(this)
         }
     }
 
@@ -224,12 +340,32 @@ class HomeActivity : AppCompatActivity() {
         }
         countdownDialog = null
 
+        recordingCountdownHandler.removeCallbacks(recordingCountdownRunnable)
+
         if (isReceiverRegistered) {
             try {
                 unregisterReceiver(sosStoppedReceiver)
                 isReceiverRegistered = false
             } catch (e: Exception) {
                 Log.w("HomeActivity", "sosStoppedReceiver was not registered: ${e.message}")
+            }
+        }
+
+        if (isRecordingReceiverRegistered) {
+            try {
+                unregisterReceiver(recordingStateReceiver)
+                isRecordingReceiverRegistered = false
+            } catch (e: Exception) {
+                Log.w("HomeActivity", "recordingStateReceiver was not registered: ${e.message}")
+            }
+        }
+
+        if (isDeliveryReceiverRegistered) {
+            try {
+                unregisterReceiver(deliveryStateReceiver)
+                isDeliveryReceiverRegistered = false
+            } catch (e: Exception) {
+                Log.w("HomeActivity", "deliveryStateReceiver was not registered: ${e.message}")
             }
         }
     }
@@ -247,6 +383,106 @@ class HomeActivity : AppCompatActivity() {
         } else {
             btnStopSOS?.isVisible = false
             btnSOS?.isEnabled = true
+        }
+        updateAudioDeliveryUI()
+    }
+
+    private fun startSosAudioRecording(sessionId: String) {
+        if (AudioRecordingManager.isRecording) {
+            Log.d("HomeActivity", "Audio recording already active.")
+            return
+        }
+        val result = AudioRecordingManager.startRecording(this, sessionId)
+        result.onSuccess { file ->
+            Log.d("HomeActivity", "Automatic 20s emergency recording started: ${file.name}")
+            showStopRecordingButton()
+            updateAudioDeliveryUI()
+        }.onFailure { e ->
+            Log.w("HomeActivity", "Failed to start 20s emergency recording: ${e.message}")
+            updateAudioDeliveryUI()
+        }
+    }
+
+    private fun stopSosAudioRecordingEarly() {
+        Log.d("HomeActivity", "User pressed Stop Recording early directly above SOS button.")
+        hideStopRecordingButton()
+        val savedFile = AudioRecordingManager.stopRecording(this)
+        if (savedFile != null) {
+            Toast.makeText(this, "Recording finalized early & delivering to guardians...", Toast.LENGTH_SHORT).show()
+        }
+        updateAudioDeliveryUI()
+    }
+
+    private fun showStopRecordingButton() {
+        val btnStop = findViewById<MaterialButton>(R.id.btnStopRecordingHome) ?: return
+        btnStop.isVisible = true
+        btnStop.text = "Stop Recording (20s)"
+        recordingCountdownHandler.removeCallbacks(recordingCountdownRunnable)
+        recordingCountdownHandler.postDelayed(recordingCountdownRunnable, 1000)
+    }
+
+    private fun hideStopRecordingButton() {
+        recordingCountdownHandler.removeCallbacks(recordingCountdownRunnable)
+        val btnStop = findViewById<MaterialButton>(R.id.btnStopRecordingHome) ?: return
+        btnStop.isVisible = false
+    }
+
+    private fun updateAudioDeliveryUI() {
+        val container = findViewById<View>(R.id.audioDeliveryStatusContainer) ?: return
+        val txtStatus = findViewById<TextView>(R.id.txtDeliveryStatus) ?: return
+        val imgStatus = findViewById<ImageView>(R.id.imgDeliveryStatus) ?: return
+
+        val state = AudioDeliveryManager.currentState
+        val message = AudioDeliveryManager.lastStatusMessage
+
+        if (state == AudioDeliveryManager.DeliveryState.IDLE) {
+            if (AudioRecordingManager.isRecording) {
+                container.isVisible = true
+                txtStatus.text = "🔴 Recording Emergency Audio (20s max)"
+                imgStatus.setImageResource(R.drawable.ic_mic)
+                imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.error_red))
+            } else {
+                container.isVisible = false
+            }
+        } else {
+            container.isVisible = true
+            txtStatus.text = message
+            when (state) {
+                AudioDeliveryManager.DeliveryState.RECORDING -> {
+                    imgStatus.setImageResource(R.drawable.ic_mic)
+                    imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.error_red))
+                }
+                AudioDeliveryManager.DeliveryState.UPLOADING -> {
+                    imgStatus.setImageResource(R.drawable.ic_mic)
+                    imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                }
+                AudioDeliveryManager.DeliveryState.SENT -> {
+                    imgStatus.setImageResource(R.drawable.ic_status_dot)
+                    imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.success_green))
+                }
+                AudioDeliveryManager.DeliveryState.PENDING -> {
+                    imgStatus.setImageResource(R.drawable.ic_status_dot)
+                    imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.gold_warning))
+                }
+                AudioDeliveryManager.DeliveryState.FAILED -> {
+                    imgStatus.setImageResource(R.drawable.ic_status_dot)
+                    imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.error_red))
+                }
+                else -> {
+                    imgStatus.setImageResource(R.drawable.ic_mic)
+                    imgStatus.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.white))
+                }
+            }
+        }
+
+        // Ensure Stop Recording button visibility reflects active recording
+        if (AudioRecordingManager.isRecording) {
+            val btnStop = findViewById<MaterialButton>(R.id.btnStopRecordingHome)
+            if (btnStop?.isVisible != true) {
+                showStopRecordingButton()
+            }
+        } else {
+            hideStopRecordingButton()
         }
     }
 
@@ -276,7 +512,7 @@ class HomeActivity : AppCompatActivity() {
 
         Log.d("SOS_DEBUG", "SOS session created: $currentSessionId for user $userId. Starting dispatch.")
 
-        // 1. Send SMS to unique emergency contacts
+        // 1. Send SMS to unique emergency contacts immediately
         sendEmergencySmsOnce()
 
         // 2. Start local alarm sound ONCE on victim device
@@ -284,6 +520,19 @@ class HomeActivity : AppCompatActivity() {
 
         // 3. Start continuous location updates (uploads to Firebase, triggering Cloud Function for FCM notifications)
         startLiveLocationTracking()
+
+        // 4. Automatically begin a single 20-second emergency audio recording without delaying SMS or location
+        val hasMicPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (hasMicPermission) {
+            startSosAudioRecording(currentSessionId)
+        } else {
+            Log.w("HomeActivity", "RECORD_AUDIO not granted. Prompting user foreground interaction while SOS dispatches...")
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                PERMISSION_REQUEST_SOS_RECORD_AUDIO
+            )
+        }
     }
 
     private fun normalizePhone(phone: String): String {
@@ -516,6 +765,15 @@ emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
     }
 
     private fun stopLiveLocationTracking() {
+        // Stop and finalize emergency audio recording if active
+        if (AudioRecordingManager.isRecording) {
+            val savedFile = AudioRecordingManager.stopRecording(this)
+            if (savedFile != null) {
+                Toast.makeText(this, "Emergency audio finalized & delivering to guardians...", Toast.LENGTH_SHORT).show()
+            }
+        }
+        hideStopRecordingButton()
+
         SosStateManager.stopSosService(this)
 
         isSosActive = false

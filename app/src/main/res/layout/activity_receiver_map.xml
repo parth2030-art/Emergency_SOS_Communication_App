@@ -111,6 +111,64 @@
                 android:layout_marginTop="6dp"
                 android:visibility="gone"
                 android:gravity="center"/>
+
+            <!-- Emergency Audio Recording Section -->
+            <LinearLayout
+                android:id="@+id/layoutAudioRecording"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_status_pill"
+                android:backgroundTint="#F0F4F8"
+                android:padding="12dp"
+                android:layout_marginTop="10dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <ImageView
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:src="@drawable/ic_mic"
+                        app:tint="@color/error_red"
+                        android:layout_marginEnd="8dp"/>
+
+                    <TextView
+                        android:id="@+id/txtAudioTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Emergency Audio Clip"
+                        android:textStyle="bold"
+                        android:textSize="13sp"
+                        android:textColor="@color/dark_gray"/>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnPlayAudio"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="38dp"
+                        android:text="Play"
+                        android:textSize="12sp"
+                        android:paddingHorizontal="14dp"
+                        app:icon="@drawable/ic_play"
+                        app:iconSize="16dp"
+                        app:cornerRadius="19dp"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/txtAudioDetails"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Duration: -- • Received via Firebase"
+                    android:textSize="11sp"
+                    android:textColor="@color/medium_gray"
+                    android:layout_marginTop="4dp"/>
+            </LinearLayout>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 

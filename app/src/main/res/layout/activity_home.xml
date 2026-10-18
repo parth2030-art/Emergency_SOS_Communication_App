@@ -28,6 +28,19 @@
             app:layout_constraintStart_toStartOf="parent"/>
 
         <ImageButton
+            android:id="@+id/btnRecordings"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_mic"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            app:tint="@color/white"
+            android:contentDescription="Emergency Audio Recordings"
+            android:layout_marginEnd="8dp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toStartOf="@id/btnSettings"/>
+
+        <ImageButton
             android:id="@+id/btnSettings"
             android:layout_width="48dp"
             android:layout_height="48dp"
@@ -73,16 +86,71 @@
             android:textStyle="bold"/>
     </LinearLayout>
 
+    <!-- Audio Delivery Status Pill (Visible whenever there is a delivery or recording status) -->
+    <LinearLayout
+        android:id="@+id/audioDeliveryStatusContainer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="@drawable/bg_status_pill"
+        android:paddingVertical="6dp"
+        android:paddingHorizontal="14dp"
+        android:layout_marginTop="6dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/statusContainer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageView
+            android:id="@+id/imgDeliveryStatus"
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:src="@drawable/ic_mic"
+            app:tint="@color/white"
+            android:layout_marginEnd="6dp"/>
+
+        <TextView
+            android:id="@+id/txtDeliveryStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🎙️ Audio Recording"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+    <!-- Stop Recording Button (directly above existing SOS button, visible only during active recording) -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnStopRecordingHome"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:text="Stop Recording (20s)"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        app:icon="@drawable/ic_stop"
+        app:iconTint="@color/white"
+        app:backgroundTint="@color/error_red"
+        app:cornerRadius="24dp"
+        android:visibility="gone"
+        android:layout_marginTop="8dp"
+        app:layout_constraintTop_toBottomOf="@id/audioDeliveryStatusContainer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:elevation="6dp"/>
+
     <!-- Circular SOS Button Container (for pulse effect) -->
     <FrameLayout
         android:id="@+id/sosButtonContainer"
         android:layout_width="220dp"
         android:layout_height="220dp"
-        app:layout_constraintTop_toBottomOf="@id/statusContainer"
+        app:layout_constraintTop_toBottomOf="@id/btnStopRecordingHome"
+        app:layout_goneMarginTop="16dp"
         app:layout_constraintBottom_toTopOf="@id/quickActionsTitle"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp">
+        android:layout_marginTop="12dp">
 
         <!-- Outer Pulse Ring -->
         <View

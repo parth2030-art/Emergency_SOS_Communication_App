@@ -22,6 +22,7 @@ androidx-recyclerview = { module = "androidx.recyclerview:recyclerview", version
 firebase-database = { group = "com.google.firebase", name = "firebase-database" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version = "34.15.0" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+firebase-storage = { group = "com.google.firebase", name = "firebase-storage" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 material = { group="com.google.android.material", name="material", version.ref="material" }
 androidx-activity-ktx = { group="androidx.activity", name="activity-ktx", version.ref="activityKtx" }

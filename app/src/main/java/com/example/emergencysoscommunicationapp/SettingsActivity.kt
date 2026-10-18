@@ -123,8 +123,40 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, "Low Battery Alert Threshold set to $selectedThreshold%", Toast.LENGTH_SHORT).show()
         }
 
-        // 6. Permissions Checker
-        checkPermissionsUI(txtLocationStatus, imgStatusDot)
+        // 6. Auto-Record Audio on SOS Setup (Stage 5)
+        val switchAutoRecordAudio = findViewById<SwitchMaterial>(R.id.switchAutoRecordAudio)
+        val isAutoRecordEnabled = prefs.getBoolean("auto_record_audio_enabled", false)
+        switchAutoRecordAudio.isChecked = isAutoRecordEnabled
+
+        switchAutoRecordAudio.setOnCheckedChangeListener { buttonView, isChecked ->
+            if (isChecked) {
+                val hasMicPermission = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (hasMicPermission) {
+                    prefs.edit().putBoolean("auto_record_audio_enabled", true).apply()
+                    Toast.makeText(this, "Auto-Record Audio on SOS Enabled", Toast.LENGTH_SHORT).show()
+                } else {
+                    buttonView.isChecked = false
+                    Toast.makeText(this, "Microphone permission required for auto-recording", Toast.LENGTH_SHORT).show()
+                    androidx.core.app.ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(Manifest.permission.RECORD_AUDIO),
+                        202
+                    )
+                }
+            } else {
+                prefs.edit().putBoolean("auto_record_audio_enabled", false).apply()
+                Toast.makeText(this, "Auto-Record Audio Disabled", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // 7. Permissions Checker
+        val txtMicStatus = findViewById<TextView>(R.id.txtMicStatus)
+        val imgMicStatusDot = findViewById<ImageView>(R.id.imgMicStatusDot)
+        checkPermissionsUI(txtLocationStatus, imgStatusDot, txtMicStatus, imgMicStatusDot)
 
         btnLocationPerm.setOnClickListener {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -134,30 +166,88 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 202) {
+            val switchAutoRecordAudio = findViewById<SwitchMaterial>(R.id.switchAutoRecordAudio)
+            val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                switchAutoRecordAudio?.isChecked = true
+                prefs.edit().putBoolean("auto_record_audio_enabled", true).apply()
+                Toast.makeText(this, "Auto-Record Audio on SOS Enabled", Toast.LENGTH_SHORT).show()
+            } else {
+                switchAutoRecordAudio?.isChecked = false
+                prefs.edit().putBoolean("auto_record_audio_enabled", false).apply()
+                Toast.makeText(this, "Microphone permission denied", Toast.LENGTH_SHORT).show()
+            }
+            val txtLocationStatus = findViewById<TextView>(R.id.txtLocationStatus)
+            val imgStatusDot = findViewById<ImageView>(R.id.imgStatusDot)
+            val txtMicStatus = findViewById<TextView>(R.id.txtMicStatus)
+            val imgMicStatusDot = findViewById<ImageView>(R.id.imgMicStatusDot)
+            checkPermissionsUI(txtLocationStatus, imgStatusDot, txtMicStatus, imgMicStatusDot)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         // Refresh permissions status in case user came back from OS settings
         val txtLocationStatus = findViewById<TextView>(R.id.txtLocationStatus)
         val imgStatusDot = findViewById<ImageView>(R.id.imgStatusDot)
-        if (txtLocationStatus != null && imgStatusDot != null) {
-            checkPermissionsUI(txtLocationStatus, imgStatusDot)
+        val txtMicStatus = findViewById<TextView>(R.id.txtMicStatus)
+        val imgMicStatusDot = findViewById<ImageView>(R.id.imgMicStatusDot)
+        checkPermissionsUI(txtLocationStatus, imgStatusDot, txtMicStatus, imgMicStatusDot)
+
+        // If mic permission was revoked in OS settings, ensure switch is turned off
+        val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!hasMic) {
+            val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
+            if (prefs.getBoolean("auto_record_audio_enabled", false)) {
+                prefs.edit().putBoolean("auto_record_audio_enabled", false).apply()
+                findViewById<SwitchMaterial>(R.id.switchAutoRecordAudio)?.isChecked = false
+            }
         }
     }
 
-    private fun checkPermissionsUI(txtLocationStatus: TextView, imgStatusDot: ImageView) {
+    private fun checkPermissionsUI(
+        txtLocationStatus: TextView?,
+        imgStatusDot: ImageView?,
+        txtMicStatus: TextView?,
+        imgMicStatusDot: ImageView?
+    ) {
         val fineLocationPermission = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
         if (fineLocationPermission) {
-            txtLocationStatus.text = "Location Permission: Granted"
-            imgStatusDot.imageTintList = android.content.res.ColorStateList.valueOf(
+            txtLocationStatus?.text = "Location Permission: Granted"
+            imgStatusDot?.imageTintList = android.content.res.ColorStateList.valueOf(
                 ContextCompat.getColor(this, R.color.success_green)
             )
         } else {
-            txtLocationStatus.text = "Location Permission: Denied"
-            imgStatusDot.imageTintList = android.content.res.ColorStateList.valueOf(
+            txtLocationStatus?.text = "Location Permission: Denied"
+            imgStatusDot?.imageTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.error_red)
+            )
+        }
+
+        val micPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (micPermission) {
+            txtMicStatus?.text = "Microphone Permission: Granted"
+            imgMicStatusDot?.imageTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.success_green)
+            )
+        } else {
+            txtMicStatus?.text = "Microphone Permission: Denied"
+            imgMicStatusDot?.imageTintList = android.content.res.ColorStateList.valueOf(
                 ContextCompat.getColor(this, R.color.error_red)
             )
         }

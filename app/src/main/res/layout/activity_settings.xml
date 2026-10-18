@@ -285,6 +285,51 @@
                             android:textColor="?android:attr/textColorPrimary"/>
                     </com.google.android.material.textfield.TextInputLayout>
 
+                    <!-- Divider -->
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/light_gray"
+                        android:layout_marginVertical="12dp"/>
+
+                    <!-- Auto-Record Audio on SOS Toggle Row -->
+                    <RelativeLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:paddingVertical="4dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:layout_toStartOf="@id/switchAutoRecordAudio"
+                            android:layout_marginEnd="16dp"
+                            android:layout_centerVertical="true">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Auto-Record Audio on SOS"
+                                android:textSize="15sp"
+                                android:textColor="?android:attr/textColorPrimary"/>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Opt-in: Automatically records emergency audio to app-private storage when SOS is triggered. Does not record automatically on app open."
+                                android:textSize="12sp"
+                                android:textColor="?android:attr/textColorSecondary"
+                                android:layout_marginTop="2dp"/>
+                        </LinearLayout>
+
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/switchAutoRecordAudio"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_alignParentEnd="true"
+                            android:layout_centerVertical="true" />
+                    </RelativeLayout>
+
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -335,6 +380,32 @@
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
                             android:text="Location Permission: Granted"
+                            android:textSize="15sp"
+                            android:textColor="?android:attr/textColorPrimary"/>
+                    </LinearLayout>
+
+                    <!-- Microphone Status Layout -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="12dp">
+
+                        <ImageView
+                            android:id="@+id/imgMicStatusDot"
+                            android:layout_width="10dp"
+                            android:layout_height="10dp"
+                            android:src="@drawable/ic_status_dot"
+                            app:tint="@color/success_green"
+                            android:layout_marginEnd="10dp"/>
+
+                        <TextView
+                            android:id="@+id/txtMicStatus"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Microphone Permission: Granted"
                             android:textSize="15sp"
                             android:textColor="?android:attr/textColorPrimary"/>
                     </LinearLayout>

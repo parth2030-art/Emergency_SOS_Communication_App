@@ -20,6 +20,10 @@ import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import android.media.MediaPlayer
+import android.widget.Toast
+import androidx.core.view.isVisible
+import com.google.android.material.button.MaterialButton
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -42,6 +46,9 @@ class ReceiverMapActivity : AppCompatActivity() {
 
     private lateinit var guardianLocationCallback: LocationCallback
     private var isGuardianTrackingActive = false
+
+    private var audioPlayer: MediaPlayer? = null
+    private var isAudioPlaying = false
 
     private var senderUserId: String = "user_1"
     private var sosSessionId: String = ""
@@ -271,6 +278,38 @@ class ReceiverMapActivity : AppCompatActivity() {
                         txtBatteryStatus.visibility = View.GONE
                     }
 
+                    // Parse Emergency Audio Recording if delivered to Firebase
+                    val audioSnap = snapshot.child("audioRecording")
+                    val layoutAudio = findViewById<View>(R.id.layoutAudioRecording)
+                    val btnPlayAudio = findViewById<MaterialButton>(R.id.btnPlayAudio)
+                    val txtAudioTitle = findViewById<TextView>(R.id.txtAudioTitle)
+                    val txtAudioDetails = findViewById<TextView>(R.id.txtAudioDetails)
+
+                    if (audioSnap.exists()) {
+                        val downloadUrl = audioSnap.child("downloadUrl").getValue(String::class.java)
+                        val audioStatus = audioSnap.child("status").getValue(String::class.java) ?: "SENT"
+                        val durationMs = audioSnap.child("durationMs").getValue(Long::class.java) ?: 0L
+                        val audioTimeRaw = audioSnap.child("timestamp").getValue(Long::class.java) ?: 0L
+
+                        val durationFormatted = if (durationMs > 0) {
+                            AudioRecordingManager.formatDuration(durationMs)
+                        } else "00:20"
+
+                        layoutAudio?.isVisible = true
+                        txtAudioTitle?.text = "🎙️ Emergency Audio Clip ($durationFormatted)"
+                        val formattedTime = if (audioTimeRaw > 0) {
+                            val sdf = SimpleDateFormat("hh:mm a", Locale.getDefault())
+                            "Received ${sdf.format(Date(audioTimeRaw))}"
+                        } else "Delivered to Guardian"
+                        txtAudioDetails?.text = "$formattedTime • Status: $audioStatus"
+
+                        btnPlayAudio?.setOnClickListener {
+                            toggleAudioPlayback(downloadUrl, btnPlayAudio)
+                        }
+                    } else {
+                        layoutAudio?.isVisible = false
+                    }
+
                     updateVictimMarker(latitude = latitude, longitude = longitude, status = status)
 
                 } catch (exception: Exception) {
@@ -286,6 +325,57 @@ class ReceiverMapActivity : AppCompatActivity() {
         }
 
         database.addValueEventListener(locationListener!!)
+    }
+
+    private fun toggleAudioPlayback(downloadUrl: String?, btnPlay: MaterialButton) {
+        if (isAudioPlaying) {
+            stopAudioPlayback(btnPlay)
+        } else {
+            if (downloadUrl.isNullOrEmpty()) {
+                Toast.makeText(this, "Audio recording URL unavailable or pending upload", Toast.LENGTH_SHORT).show()
+                return
+            }
+            try {
+                audioPlayer?.release()
+                audioPlayer = MediaPlayer().apply {
+                    setDataSource(downloadUrl)
+                    setOnPreparedListener {
+                        start()
+                        isAudioPlaying = true
+                        btnPlay.text = "Stop"
+                        btnPlay.setIconResource(R.drawable.ic_stop)
+                    }
+                    setOnCompletionListener {
+                        stopAudioPlayback(btnPlay)
+                    }
+                    setOnErrorListener { _, _, _ ->
+                        stopAudioPlayback(btnPlay)
+                        Toast.makeText(this@ReceiverMapActivity, "Failed to stream emergency audio", Toast.LENGTH_SHORT).show()
+                        true
+                    }
+                    prepareAsync()
+                }
+            } catch (e: Exception) {
+                Log.e("ReceiverMapActivity", "Error playing emergency audio: ${e.message}", e)
+                Toast.makeText(this, "Playback error: ${e.message}", Toast.LENGTH_SHORT).show()
+                stopAudioPlayback(btnPlay)
+            }
+        }
+    }
+
+    private fun stopAudioPlayback(btnPlay: MaterialButton?) {
+        try {
+            if (audioPlayer?.isPlaying == true) {
+                audioPlayer?.stop()
+            }
+            audioPlayer?.release()
+        } catch (e: Exception) {
+            // Ignore
+        }
+        audioPlayer = null
+        isAudioPlaying = false
+        btnPlay?.text = "Play"
+        btnPlay?.setIconResource(R.drawable.ic_play)
     }
 
     private fun startGuardianLocationUpdates() {

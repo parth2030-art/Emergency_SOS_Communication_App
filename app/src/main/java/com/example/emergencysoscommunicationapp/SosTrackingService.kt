@@ -42,6 +42,8 @@ class SosTrackingService : Service() {
         const val TAG = "SosTrackingService"
         const val ACTION_START_SOS = "com.example.emergencysoscommunicationapp.ACTION_START_SOS"
         const val ACTION_STOP_SOS = "com.example.emergencysoscommunicationapp.ACTION_STOP_SOS"
+        const val ACTION_START_RECORDING = "com.example.emergencysoscommunicationapp.ACTION_START_RECORDING"
+        const val ACTION_STOP_RECORDING = "com.example.emergencysoscommunicationapp.ACTION_STOP_RECORDING"
         const val CHANNEL_ID = "sos_foreground_service_channel"
         const val NOTIFICATION_ID = 9999
 
@@ -55,7 +57,10 @@ class SosTrackingService : Service() {
     private var isLocationCallbackRegistered = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var batteryReceiver: BroadcastReceiver? = null
+    private var recordingReceiver: BroadcastReceiver? = null
     private var lastKnownBatteryLevel: Int? = null
+    private var lastLatitude: Double = 0.0
+    private var lastLongitude: Double = 0.0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -69,17 +74,18 @@ class SosTrackingService : Service() {
         networkCallback = NetworkMonitor.registerNetworkCallback(
             context = this,
             onAvailable = {
-                Log.d(TAG, "Network connection restored. Syncing pending offline queue if available.")
+                Log.d(TAG, "Network connection restored. Syncing pending offline queue and pending audio upload if available.")
                 if (OfflineLocationQueue.hasQueuedLocations(this@SosTrackingService)) {
                     OfflineLocationQueue.syncQueueToFirebase(this@SosTrackingService)
                 }
+                AudioDeliveryManager.retryPendingUpload(this@SosTrackingService)
             },
             onLost = {
                 Log.w(TAG, "Network connection lost during active SOS tracking.")
             }
         )
 
-        // Register dynamic battery monitoring receiver for the active SOS session (Option A)
+        // Register dynamic battery monitoring receiver for the active SOS session
         batteryReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
@@ -107,9 +113,26 @@ class SosTrackingService : Service() {
             Log.e(TAG, "Failed to register battery receiver: ${e.message}")
         }
 
+        // Register receiver for emergency audio recording state changes
+        recordingReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == AudioRecordingManager.ACTION_RECORDING_STATE_CHANGED) {
+                    Log.d(TAG, "Recording state changed received in service: isRecording=${AudioRecordingManager.isRecording}")
+                    updateNotificationContent(lastLatitude, lastLongitude, isOffline = !NetworkMonitor.isInternetAvailable(this@SosTrackingService))
+                    if (!AudioRecordingManager.isRecording && !SosStateManager.isSosActive(this@SosTrackingService)) {
+                        stopTrackingAndFinish()
+                    }
+                }
+            }
+        }
+        val recordingFilter = IntentFilter(AudioRecordingManager.ACTION_RECORDING_STATE_CHANGED)
+        ContextCompat.registerReceiver(this, recordingReceiver, recordingFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
+
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 val location = locationResult.lastLocation ?: return
+                lastLatitude = location.latitude
+                lastLongitude = location.longitude
                 Log.d(TAG, "Background SOS location update: lat=${location.latitude}, lng=${location.longitude}")
                 // Cache location for offline fallback usage
                 OfflineSosManager.cacheLocation(this@SosTrackingService, location.latitude, location.longitude)
@@ -127,51 +150,76 @@ class SosTrackingService : Service() {
             return START_NOT_STICKY
         }
 
+        if (action == ACTION_STOP_RECORDING) {
+            Log.d(TAG, "ACTION_STOP_RECORDING received in SosTrackingService")
+            AudioRecordingManager.stopRecording(this)
+            updateNotificationContent(lastLatitude, lastLongitude, isOffline = !NetworkMonitor.isInternetAvailable(this))
+            if (!SosStateManager.isSosActive(this)) {
+                stopTrackingAndFinish()
+                return START_NOT_STICKY
+            }
+            return START_STICKY
+        }
+
+        val isStartingRecordingOnly = action == ACTION_START_RECORDING && !SosStateManager.isSosActive(this)
+
         if (isServiceRunning) {
-            Log.d(TAG, "SosTrackingService is already running. Preventing duplicate service startup.")
+            Log.d(TAG, "SosTrackingService is already running. Refreshing notification/tracking if needed.")
+            if (action == ACTION_START_SOS && !isLocationCallbackRegistered) {
+                startContinuousLocationTracking()
+            }
+            updateNotificationContent(lastLatitude, lastLongitude, isOffline = !NetworkMonitor.isInternetAvailable(this))
             return START_STICKY
         }
 
         isServiceRunning = true
 
         val initialNotification = buildForegroundNotification(
-            title = "🚨 Emergency SOS Active",
-            body = "Broadcasting live location to guardians..."
+            title = if (isStartingRecordingOnly) "🔴 Emergency Audio Recording" else "🚨 Emergency SOS Active",
+            body = if (isStartingRecordingOnly) "🎙️ Audio recording in progress. App-private storage." else "Broadcasting live location to guardians..."
         )
 
+        updateForegroundServiceType(initialNotification)
+
+        if (!isStartingRecordingOnly) {
+            // Query initial battery immediately to catch already-low battery or app restarts
+            val currentBattery = BatteryAlertManager.getBatteryLevel(this)
+            if (currentBattery != null) {
+                lastKnownBatteryLevel = currentBattery
+                val sessionId = SosStateManager.getActiveSessionId(this)
+                val userId = SosStateManager.getUserId(this)
+                BatteryAlertManager.evaluateAndSendAlert(this, currentBattery, sessionId)
+                BatteryAlertManager.publishBatteryToFirebase(userId, currentBattery)
+            }
+
+            startContinuousLocationTracking()
+        }
+
+        return START_STICKY
+    }
+
+    private fun updateForegroundServiceType(notification: Notification) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-                } else {
-                    0
+                var serviceType = 0
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (SosStateManager.isSosActive(this)) {
+                        serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                    }
+                    if (AudioRecordingManager.isRecording) {
+                        serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    }
+                    if (serviceType == 0) {
+                        serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                    }
                 }
-                ServiceCompat.startForeground(
-                    this,
-                    NOTIFICATION_ID,
-                    initialNotification,
-                    serviceType
-                )
+                ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, serviceType)
             } else {
-                startForeground(NOTIFICATION_ID, initialNotification)
+                startForeground(NOTIFICATION_ID, notification)
             }
-            Log.d(TAG, "Service started in foreground with type LOCATION")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
+            Log.e(TAG, "Failed to set/update foreground service: ${e.message}", e)
         }
-
-        // Query initial battery immediately to catch already-low battery or app restarts
-        val currentBattery = BatteryAlertManager.getBatteryLevel(this)
-        if (currentBattery != null) {
-            lastKnownBatteryLevel = currentBattery
-            val sessionId = SosStateManager.getActiveSessionId(this)
-            val userId = SosStateManager.getUserId(this)
-            BatteryAlertManager.evaluateAndSendAlert(this, currentBattery, sessionId)
-            BatteryAlertManager.publishBatteryToFirebase(userId, currentBattery)
-        }
-
-        startContinuousLocationTracking()
-        return START_STICKY
     }
 
     private fun startContinuousLocationTracking() {
@@ -301,23 +349,45 @@ class SosTrackingService : Service() {
         }
     }
 
-    private fun updateNotificationContent(latitude: Double, longitude: Double, isOffline: Boolean = false) {
+    private fun updateNotificationContent(latitude: Double = lastLatitude, longitude: Double = lastLongitude, isOffline: Boolean = false) {
+        val isSos = SosStateManager.isSosActive(this)
+        val isRec = AudioRecordingManager.isRecording
+
+        val title = when {
+            isSos && isRec -> "🚨 SOS Active • 🔴 Recording Audio"
+            isSos && isOffline -> "🚨 Emergency SOS (Offline)"
+            isSos -> "🚨 Emergency SOS Active"
+            isRec -> "🔴 Emergency Audio Recording"
+            else -> "Emergency SOS Active"
+        }
+
         val sdf = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
         val timeStr = sdf.format(Date())
         val batteryStr = if (lastKnownBatteryLevel != null) " | 🔋 $lastKnownBatteryLevel%" else ""
-        val body = if (isOffline) {
-            "⚠️ Offline (GPS Queued): %.4f, %.4f | %s%s".format(latitude, longitude, timeStr, batteryStr)
-        } else {
-            "Live GPS: %.4f, %.4f | Updated: %s%s".format(latitude, longitude, timeStr, batteryStr)
+        val bodyBuilder = StringBuilder()
+
+        if (isSos) {
+            if (isOffline) {
+                bodyBuilder.append("⚠️ Offline (GPS Queued): %.4f, %.4f | %s%s".format(latitude, longitude, timeStr, batteryStr))
+            } else if (latitude != 0.0 || longitude != 0.0) {
+                bodyBuilder.append("Live GPS: %.4f, %.4f | %s%s".format(latitude, longitude, timeStr, batteryStr))
+            } else {
+                bodyBuilder.append("Broadcasting live location to guardians...%s".format(batteryStr))
+            }
         }
 
-        val updatedNotification = buildForegroundNotification(
-            title = if (isOffline) "🚨 Emergency SOS (Offline)" else "🚨 Emergency SOS Active",
-            body = body
-        )
+        if (isRec) {
+            if (bodyBuilder.isNotEmpty()) bodyBuilder.append("\n")
+            bodyBuilder.append("🎙️ Audio recording active. Saved to private storage.")
+        }
 
+        val body = if (bodyBuilder.isEmpty()) "Emergency SOS Service Active" else bodyBuilder.toString()
+
+        val updatedNotification = buildForegroundNotification(title = title, body = body)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, updatedNotification)
+
+        updateForegroundServiceType(updatedNotification)
     }
 
     private fun buildForegroundNotification(title: String, body: String): Notification {
@@ -331,17 +401,17 @@ class SosTrackingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(this, SosTrackingService::class.java).apply {
+        val stopSosIntent = Intent(this, SosTrackingService::class.java).apply {
             action = ACTION_STOP_SOS
         }
-        val stopPendingIntent = PendingIntent.getService(
+        val stopSosPendingIntent = PendingIntent.getService(
             this,
             1,
-            stopIntent,
+            stopSosIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(body)
@@ -350,8 +420,25 @@ class SosTrackingService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openPendingIntent)
-            .addAction(R.drawable.ic_status_dot, "STOP SOS", stopPendingIntent)
-            .build()
+
+        if (AudioRecordingManager.isRecording) {
+            val stopRecIntent = Intent(this, SosTrackingService::class.java).apply {
+                action = ACTION_STOP_RECORDING
+            }
+            val stopRecPendingIntent = PendingIntent.getService(
+                this,
+                2,
+                stopRecIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(R.drawable.ic_stop, "STOP RECORDING", stopRecPendingIntent)
+        }
+
+        if (SosStateManager.isSosActive(this)) {
+            builder.addAction(R.drawable.ic_status_dot, "STOP SOS", stopSosPendingIntent)
+        }
+
+        return builder.build()
     }
 
     private fun createNotificationChannel() {
@@ -372,6 +459,24 @@ class SosTrackingService : Service() {
 
     private fun stopTrackingAndFinish() {
         Log.d(TAG, "stopTrackingAndFinish() requested.")
+
+        // Finalize emergency audio recording if active
+        if (AudioRecordingManager.isRecording) {
+            Log.d(TAG, "SOS stopped: stopping active audio recording...")
+            val savedFile = AudioRecordingManager.stopRecording(this)
+            if (savedFile != null) {
+                Log.i(TAG, "Emergency recording finalized at: ${savedFile.absolutePath}")
+            }
+        }
+
+        if (recordingReceiver != null) {
+            try {
+                unregisterReceiver(recordingReceiver)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering recordingReceiver: ${e.message}")
+            }
+            recordingReceiver = null
+        }
 
         NetworkMonitor.unregisterNetworkCallback(this, networkCallback)
         networkCallback = null
@@ -452,6 +557,15 @@ class SosTrackingService : Service() {
                 Log.w(TAG, "Error unregistering battery receiver in onDestroy: ${e.message}")
             }
             batteryReceiver = null
+        }
+
+        if (recordingReceiver != null) {
+            try {
+                unregisterReceiver(recordingReceiver)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering recordingReceiver in onDestroy: ${e.message}")
+            }
+            recordingReceiver = null
         }
 
         if (isServiceRunning) {
