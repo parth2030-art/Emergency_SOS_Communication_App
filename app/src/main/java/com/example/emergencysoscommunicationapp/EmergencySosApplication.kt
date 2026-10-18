@@ -1,6 +1,7 @@
 package com.example.emergencysoscommunicationapp
 
 import android.app.Application
+import android.util.Log
 import org.osmdroid.config.Configuration
 
 class EmergencySosApplication : Application() {
@@ -17,5 +18,15 @@ class EmergencySosApplication : Application() {
 
         // Load OSMDroid settings safely from SharedPreferences
         configuration.load(applicationContext, sharedPrefs)
+
+        // Sync pending offline location queue on startup if internet is available
+        try {
+            if (NetworkMonitor.isInternetAvailable(this) && OfflineLocationQueue.hasQueuedLocations(this)) {
+                Log.d("EmergencySosApp", "Pending offline locations detected on app startup. Syncing to Firebase.")
+                OfflineLocationQueue.syncQueueToFirebase(this)
+            }
+        } catch (e: Exception) {
+            Log.e("EmergencySosApp", "Error syncing offline queue on startup: ${e.message}")
+        }
     }
 }

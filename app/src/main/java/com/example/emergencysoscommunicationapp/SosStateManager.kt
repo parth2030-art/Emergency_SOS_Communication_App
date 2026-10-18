@@ -58,7 +58,7 @@ object SosStateManager {
             .apply()
     }
 
-    fun updateFirebaseStatus(status: String, userId: String = DEFAULT_USER_ID) {
+    fun updateFirebaseStatus(status: String, userId: String = DEFAULT_USER_ID, context: Context? = null) {
         try {
             val database = FirebaseDatabase.getInstance().reference
             database.child("sos_locations")
@@ -70,9 +70,37 @@ object SosStateManager {
                 }
                 .addOnFailureListener { e ->
                     Log.e("SosStateManager", "Failed to update Firebase status: ${e.message}")
+                    if (context != null) {
+                        val cached = OfflineSosManager.getLastCachedLocation(context)
+                        OfflineLocationQueue.enqueueLocation(
+                            context,
+                            OfflineLocationQueue.QueuedLocation(
+                                latitude = cached?.latitude ?: 0.0,
+                                longitude = cached?.longitude ?: 0.0,
+                                timestamp = System.currentTimeMillis(),
+                                status = status,
+                                sessionId = "",
+                                senderUserId = userId
+                            )
+                        )
+                    }
                 }
         } catch (e: Exception) {
             Log.e("SosStateManager", "Exception updating Firebase status: ${e.message}")
+            if (context != null) {
+                val cached = OfflineSosManager.getLastCachedLocation(context)
+                OfflineLocationQueue.enqueueLocation(
+                    context,
+                    OfflineLocationQueue.QueuedLocation(
+                        latitude = cached?.latitude ?: 0.0,
+                        longitude = cached?.longitude ?: 0.0,
+                        timestamp = System.currentTimeMillis(),
+                        status = status,
+                        sessionId = "",
+                        senderUserId = userId
+                    )
+                )
+            }
         }
     }
 

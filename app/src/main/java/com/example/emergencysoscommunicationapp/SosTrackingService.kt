@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
@@ -27,6 +28,8 @@ import java.util.Locale
  * Foreground Service for robust, unkillable background SOS location tracking.
  * Complies with Android 10+ and Android 14+ (API 34/35) FOREGROUND_SERVICE_LOCATION requirements.
  * Hosts continuous FusedLocationProviderClient updates, updates Firebase in real-time,
+ * persists unsynced coordinates into an offline queue during connectivity failures,
+ * dispatches throttled offline fallback SMS when internet is unavailable,
  * and maintains an ongoing notification with a one-tap "STOP SOS" action.
  */
 class SosTrackingService : Service() {
@@ -46,6 +49,7 @@ class SosTrackingService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var isLocationCallbackRegistered = false
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -55,12 +59,27 @@ class SosTrackingService : Service() {
         createNotificationChannel()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
+        // Register network monitoring callback to auto-sync pending offline locations on reconnect
+        networkCallback = NetworkMonitor.registerNetworkCallback(
+            context = this,
+            onAvailable = {
+                Log.d(TAG, "Network connection restored. Syncing pending offline queue if available.")
+                if (OfflineLocationQueue.hasQueuedLocations(this@SosTrackingService)) {
+                    OfflineLocationQueue.syncQueueToFirebase(this@SosTrackingService)
+                }
+            },
+            onLost = {
+                Log.w(TAG, "Network connection lost during active SOS tracking.")
+            }
+        )
+
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 val location = locationResult.lastLocation ?: return
                 Log.d(TAG, "Background SOS location update: lat=${location.latitude}, lng=${location.longitude}")
-                uploadLocationToFirebase(location.latitude, location.longitude)
-                updateNotificationContent(location.latitude, location.longitude)
+                // Cache location for offline fallback usage
+                OfflineSosManager.cacheLocation(this@SosTrackingService, location.latitude, location.longitude)
+                handleLocationUpdate(location.latitude, location.longitude)
             }
         }
     }
@@ -146,10 +165,33 @@ class SosTrackingService : Service() {
         }
     }
 
-    private fun uploadLocationToFirebase(latitude: Double, longitude: Double) {
+    /**
+     * Processes location coordinates.
+     * When online, uploads directly to Firebase and flushes any pending queue.
+     * When offline or upon Firebase delivery failure, persists in local queue and triggers throttled fallback SMS.
+     */
+    private fun handleLocationUpdate(latitude: Double, longitude: Double) {
         val userId = SosStateManager.getUserId(this)
         val sessionId = SosStateManager.getActiveSessionId(this)
         val timestamp = System.currentTimeMillis()
+
+        if (!NetworkMonitor.isInternetAvailable(this)) {
+            Log.w(TAG, "Device is offline. Enqueueing location and checking offline fallback SMS.")
+            OfflineLocationQueue.enqueueLocation(
+                this,
+                OfflineLocationQueue.QueuedLocation(
+                    latitude = latitude,
+                    longitude = longitude,
+                    timestamp = timestamp,
+                    status = "SOS_ACTIVE",
+                    sessionId = sessionId,
+                    senderUserId = userId
+                )
+            )
+            updateNotificationContent(latitude, longitude, isOffline = true)
+            OfflineSosManager.sendOfflineFallbackSms(this, sessionId)
+            return
+        }
 
         val locationData = mapOf(
             "latitude" to latitude,
@@ -168,22 +210,57 @@ class SosTrackingService : Service() {
                 .setValue(locationData)
                 .addOnSuccessListener {
                     Log.d(TAG, "Foreground location published to Firebase: lat=$latitude, lng=$longitude")
+                    updateNotificationContent(latitude, longitude, isOffline = false)
+                    // Sync any older queued records if they exist
+                    if (OfflineLocationQueue.hasQueuedLocations(this@SosTrackingService)) {
+                        OfflineLocationQueue.syncQueueToFirebase(this@SosTrackingService)
+                    }
                 }
                 .addOnFailureListener { e ->
-                    Log.e(TAG, "Failed to publish location to Firebase: ${e.message}")
+                    Log.w(TAG, "Failed to publish location to Firebase: ${e.message}. Enqueueing locally.")
+                    OfflineLocationQueue.enqueueLocation(
+                        this@SosTrackingService,
+                        OfflineLocationQueue.QueuedLocation(
+                            latitude = latitude,
+                            longitude = longitude,
+                            timestamp = timestamp,
+                            status = "SOS_ACTIVE",
+                            sessionId = sessionId,
+                            senderUserId = userId
+                        )
+                    )
+                    updateNotificationContent(latitude, longitude, isOffline = true)
+                    OfflineSosManager.sendOfflineFallbackSms(this@SosTrackingService, sessionId)
                 }
         } catch (e: Exception) {
             Log.e(TAG, "Exception publishing to Firebase: ${e.message}")
+            OfflineLocationQueue.enqueueLocation(
+                this,
+                OfflineLocationQueue.QueuedLocation(
+                    latitude = latitude,
+                    longitude = longitude,
+                    timestamp = timestamp,
+                    status = "SOS_ACTIVE",
+                    sessionId = sessionId,
+                    senderUserId = userId
+                )
+            )
+            updateNotificationContent(latitude, longitude, isOffline = true)
+            OfflineSosManager.sendOfflineFallbackSms(this, sessionId)
         }
     }
 
-    private fun updateNotificationContent(latitude: Double, longitude: Double) {
+    private fun updateNotificationContent(latitude: Double, longitude: Double, isOffline: Boolean = false) {
         val sdf = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
         val timeStr = sdf.format(Date())
-        val body = "Live GPS: %.4f, %.4f | Updated: %s".format(latitude, longitude, timeStr)
+        val body = if (isOffline) {
+            "⚠️ Offline (GPS Queued): %.4f, %.4f | %s".format(latitude, longitude, timeStr)
+        } else {
+            "Live GPS: %.4f, %.4f | Updated: %s".format(latitude, longitude, timeStr)
+        }
 
         val updatedNotification = buildForegroundNotification(
-            title = "🚨 Emergency SOS Active",
+            title = if (isOffline) "🚨 Emergency SOS (Offline)" else "🚨 Emergency SOS Active",
             body = body
         )
 
@@ -244,6 +321,11 @@ class SosTrackingService : Service() {
     private fun stopTrackingAndFinish() {
         Log.d(TAG, "stopTrackingAndFinish() requested.")
 
+        NetworkMonitor.unregisterNetworkCallback(this, networkCallback)
+        networkCallback = null
+
+        OfflineSosManager.resetFallbackState(this)
+
         if (isLocationCallbackRegistered) {
             try {
                 fusedLocationClient.removeLocationUpdates(locationCallback)
@@ -257,7 +339,25 @@ class SosTrackingService : Service() {
 
         val userId = SosStateManager.getUserId(this)
         SosStateManager.setSosInactive(this)
-        SosStateManager.updateFirebaseStatus("SOS_STOPPED", userId)
+
+        // If offline when stopping, queue SOS_STOPPED to prevent old queue from overwriting or reactivating
+        if (!NetworkMonitor.isInternetAvailable(this)) {
+            val cached = OfflineSosManager.getLastCachedLocation(this)
+            OfflineLocationQueue.enqueueLocation(
+                this,
+                OfflineLocationQueue.QueuedLocation(
+                    latitude = cached?.latitude ?: 0.0,
+                    longitude = cached?.longitude ?: 0.0,
+                    timestamp = System.currentTimeMillis(),
+                    status = "SOS_STOPPED",
+                    sessionId = "",
+                    senderUserId = userId
+                )
+            )
+            Log.d(TAG, "Enqueued SOS_STOPPED status while offline for user $userId")
+        } else {
+            SosStateManager.updateFirebaseStatus("SOS_STOPPED", userId)
+        }
 
         // Broadcast to running activities (HomeActivity, LocationActivity) to update UI immediately
         val stoppedIntent = Intent(SosStateManager.ACTION_SOS_STOPPED).apply {
@@ -278,6 +378,8 @@ class SosTrackingService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "SosTrackingService.onDestroy()")
+        NetworkMonitor.unregisterNetworkCallback(this, networkCallback)
+        networkCallback = null
         if (isServiceRunning) {
             stopTrackingAndFinish()
         }

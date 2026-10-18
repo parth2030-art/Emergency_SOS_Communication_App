@@ -203,6 +203,7 @@ class LocationActivity : BaseActivity() {
 
         // ONLY upload to Firebase if an SOS emergency is actively in progress
         if (SosStateManager.isSosActive(this)) {
+            OfflineSosManager.cacheLocation(this, latitude, longitude)
             val userId = SosStateManager.getUserId(this)
             val sessionId = SosStateManager.getActiveSessionId(this)
             val database = FirebaseDatabase.getInstance().getReference("sos_locations").child(userId)
@@ -216,9 +217,24 @@ class LocationActivity : BaseActivity() {
                 "sessionId" to sessionId,
                 "senderUserId" to userId
             )
-            database.setValue(locationData).addOnSuccessListener {
-                Log.d("SOS_FIREBASE", "LocationActivity uploaded live SOS coordinates: lat=$latitude, lng=$longitude")
-            }
+            database.setValue(locationData)
+                .addOnSuccessListener {
+                    Log.d("SOS_FIREBASE", "LocationActivity uploaded live SOS coordinates: lat=$latitude, lng=$longitude")
+                }
+                .addOnFailureListener { e ->
+                    Log.w("SOS_FIREBASE", "LocationActivity failed to upload coordinates: ${e.message}. Enqueueing locally.")
+                    OfflineLocationQueue.enqueueLocation(
+                        this,
+                        OfflineLocationQueue.QueuedLocation(
+                            latitude = latitude,
+                            longitude = longitude,
+                            timestamp = timestamp,
+                            status = "SOS_ACTIVE",
+                            sessionId = sessionId,
+                            senderUserId = userId
+                        )
+                    )
+                }
         }
     }
 

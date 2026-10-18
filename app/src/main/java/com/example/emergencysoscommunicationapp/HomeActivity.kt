@@ -38,6 +38,9 @@ import com.google.android.gms.location.*
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.firebase.database.FirebaseDatabase
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class HomeActivity : AppCompatActivity() {
 
@@ -201,6 +204,12 @@ class HomeActivity : AppCompatActivity() {
                 sensorManager?.registerListener(shakeDetector, sensor, SensorManager.SENSOR_DELAY_UI)
             }
         }
+
+        // Sync pending offline locations if internet is available
+        if (NetworkMonitor.isInternetAvailable(this) && OfflineLocationQueue.hasQueuedLocations(this)) {
+            Log.d("HomeActivity", "Pending offline locations detected on resume. Syncing to Firebase.")
+            OfflineLocationQueue.syncQueueToFirebase(this)
+        }
     }
 
     override fun onPause() {
@@ -305,14 +314,15 @@ class HomeActivity : AppCompatActivity() {
         val uniqueContacts = contacts.distinctBy { normalizePhone(it.phone) }
         val userId = SosStateManager.getUserId(this)
 
-        fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-            .addOnSuccessListener { location ->
-                val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
-                val customMsg = prefs.getString("custom_msg", "I need help immediately.") ?: "I need help immediately."
+        val dispatchSmsWithLocation = { location: android.location.Location? ->
+            val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
+            val customMsg = prefs.getString("custom_msg", "I need help immediately.") ?: "I need help immediately."
 
-                val message = if (location != null) {
-                    uploadLocationToFirebase(location.latitude, location.longitude)
-                    """
+            val cached = OfflineSosManager.getLastCachedLocation(this)
+            val message = if (location != null) {
+                OfflineSosManager.cacheLocation(this, location.latitude, location.longitude)
+                uploadLocationToFirebase(location.latitude, location.longitude)
+                """
 🚨 EMERGENCY SOS 🚨
 
 $customMsg
@@ -322,33 +332,56 @@ https://maps.google.com/?q=${location.latitude},${location.longitude}
 
 View Live Movement in App:
 emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
-                    """.trimIndent()
-                } else {
-                    """
+                """.trimIndent()
+            } else if (cached != null) {
+                val sdf = SimpleDateFormat("hh:mm:ss a, MMM dd", Locale.getDefault())
+                val cachedTime = sdf.format(Date(cached.timestamp))
+                """
+🚨 EMERGENCY SOS 🚨
+
+$customMsg
+
+Last Known Location [Cached at $cachedTime]:
+https://maps.google.com/?q=${cached.latitude},${cached.longitude}
+
+View Live Movement in App:
+emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
+                """.trimIndent()
+            } else {
+                """
 🚨 EMERGENCY SOS 🚨
 
 $customMsg
 
 Location unavailable. View Live Track when online:
 emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
-                    """.trimIndent()
-                }
+                """.trimIndent()
+            }
 
-                val smsManager = SosStateManager.getSmsManager(this)
-                val parts = smsManager.divideMessage(message)
-                for (contact in uniqueContacts) {
-                    try {
-                        smsManager.sendMultipartTextMessage(contact.phone, null, parts, null, null)
-                        Log.d("SOS_NOTIFICATION", "SMS sent successfully to unique contact: ${contact.phone}")
-                    } catch (e: SecurityException) {
-                        Log.e("SOS_NOTIFICATION", "SecurityException sending SMS to ${contact.phone}: ${e.message}")
-                        Toast.makeText(this, "SMS Permission Denied", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) {
-                        Log.e("SOS_NOTIFICATION", "Failed to send SMS to ${contact.phone}: ${e.message}")
-                    }
+            val smsManager = SosStateManager.getSmsManager(this)
+            val parts = smsManager.divideMessage(message)
+            for (contact in uniqueContacts) {
+                try {
+                    smsManager.sendMultipartTextMessage(contact.phone, null, parts, null, null)
+                    Log.d("SOS_NOTIFICATION", "SMS sent successfully to unique contact: ${contact.phone}")
+                } catch (e: SecurityException) {
+                    Log.e("SOS_NOTIFICATION", "SecurityException sending SMS to ${contact.phone}: ${e.message}")
+                    Toast.makeText(this, "SMS Permission Denied", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Log.e("SOS_NOTIFICATION", "Failed to send SMS to ${contact.phone}: ${e.message}")
                 }
+            }
 
-                Toast.makeText(this, "SOS Sent To ${uniqueContacts.size} Contact(s)", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "SOS Sent To ${uniqueContacts.size} Contact(s)", Toast.LENGTH_LONG).show()
+        }
+
+        fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { location ->
+                dispatchSmsWithLocation(location)
+            }
+            .addOnFailureListener { e ->
+                Log.w("SOS_NOTIFICATION", "getCurrentLocation failed: ${e.message}. Falling back to cached/empty location.")
+                dispatchSmsWithLocation(null)
             }
     }
 
@@ -455,7 +488,18 @@ emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
                 Log.d("SOS_FIREBASE", "Firebase location update SUCCESS")
             }
             .addOnFailureListener { e ->
-                Log.e("SOS_FIREBASE", "Firebase location update FAILED: ${e.message}")
+                Log.e("SOS_FIREBASE", "Firebase location update FAILED: ${e.message}. Enqueueing locally.")
+                OfflineLocationQueue.enqueueLocation(
+                    this,
+                    OfflineLocationQueue.QueuedLocation(
+                        latitude = latitude,
+                        longitude = longitude,
+                        timestamp = timestamp,
+                        status = if (isSosActive) "SOS_ACTIVE" else "SOS_STOPPED",
+                        sessionId = currentSessionId,
+                        senderUserId = userId
+                    )
+                )
             }
     }
 
