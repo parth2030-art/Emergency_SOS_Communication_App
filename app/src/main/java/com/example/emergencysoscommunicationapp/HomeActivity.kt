@@ -469,7 +469,8 @@ emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
         val timestamp = System.currentTimeMillis()
         val userId = SosStateManager.getUserId(this)
 
-        val locationData = mapOf(
+        val batteryLevel = BatteryAlertManager.getBatteryLevel(this)
+        val locationData = mutableMapOf<String, Any>(
             "latitude" to latitude,
             "longitude" to longitude,
             "time" to timestamp,
@@ -478,6 +479,10 @@ emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
             "sessionId" to currentSessionId,
             "senderUserId" to userId
         )
+        if (batteryLevel != null) {
+            locationData["batteryLevel"] = batteryLevel
+            locationData["batteryTimestamp"] = timestamp
+        }
 
         Log.d("SOS_FIREBASE", "Sender location update to path=sos_locations/$userId: lat=$latitude, lng=$longitude, status=${locationData["status"]}")
 
@@ -497,7 +502,8 @@ emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
                         timestamp = timestamp,
                         status = if (isSosActive) "SOS_ACTIVE" else "SOS_STOPPED",
                         sessionId = currentSessionId,
-                        senderUserId = userId
+                        senderUserId = userId,
+                        batteryLevel = batteryLevel
                     )
                 )
             }

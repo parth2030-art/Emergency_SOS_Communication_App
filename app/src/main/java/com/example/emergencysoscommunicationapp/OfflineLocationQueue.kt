@@ -24,7 +24,8 @@ object OfflineLocationQueue {
         val timestamp: Long,
         val status: String,
         val sessionId: String,
-        val senderUserId: String
+        val senderUserId: String,
+        val batteryLevel: Int? = null
     )
 
     @Synchronized
@@ -123,7 +124,7 @@ object OfflineLocationQueue {
             "SOS_STOPPED"
         }
 
-        val locationData = mapOf(
+        val locationData = mutableMapOf<String, Any>(
             "latitude" to latest.latitude,
             "longitude" to latest.longitude,
             "time" to latest.timestamp,
@@ -132,6 +133,10 @@ object OfflineLocationQueue {
             "sessionId" to if (isSosCurrentlyActive) latest.sessionId else "",
             "senderUserId" to targetUserId
         )
+        if (latest.batteryLevel != null) {
+            locationData["batteryLevel"] = latest.batteryLevel
+            locationData["batteryTimestamp"] = latest.timestamp
+        }
 
         Log.d(TAG, "Attempting to sync latest queued location to Firebase for $targetUserId (status=$resolvedStatus)")
 

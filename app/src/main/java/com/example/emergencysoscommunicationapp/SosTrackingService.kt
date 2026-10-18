@@ -6,11 +6,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
@@ -30,6 +33,7 @@ import java.util.Locale
  * Hosts continuous FusedLocationProviderClient updates, updates Firebase in real-time,
  * persists unsynced coordinates into an offline queue during connectivity failures,
  * dispatches throttled offline fallback SMS when internet is unavailable,
+ * monitors battery percentage only while SOS is active, alerts contacts on low battery,
  * and maintains an ongoing notification with a one-tap "STOP SOS" action.
  */
 class SosTrackingService : Service() {
@@ -50,6 +54,8 @@ class SosTrackingService : Service() {
     private lateinit var locationCallback: LocationCallback
     private var isLocationCallbackRegistered = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var batteryReceiver: BroadcastReceiver? = null
+    private var lastKnownBatteryLevel: Int? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -72,6 +78,34 @@ class SosTrackingService : Service() {
                 Log.w(TAG, "Network connection lost during active SOS tracking.")
             }
         )
+
+        // Register dynamic battery monitoring receiver for the active SOS session (Option A)
+        batteryReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
+                    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                    if (level >= 0 && scale > 0) {
+                        val pct = (level * 100 / scale.toFloat()).toInt()
+                        lastKnownBatteryLevel = pct
+                        val sessionId = SosStateManager.getActiveSessionId(this@SosTrackingService)
+                        val userId = SosStateManager.getUserId(this@SosTrackingService)
+
+                        // 1. Evaluate low-battery alert (dispatches SMS once per session if pct <= threshold)
+                        BatteryAlertManager.evaluateAndSendAlert(this@SosTrackingService, pct, sessionId)
+
+                        // 2. Publish battery level to Firebase for guardian visibility
+                        BatteryAlertManager.publishBatteryToFirebase(userId, pct)
+                    }
+                }
+            }
+        }
+        try {
+            registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            Log.d(TAG, "Battery monitoring receiver registered for active SOS session")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register battery receiver: ${e.message}")
+        }
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
@@ -126,6 +160,16 @@ class SosTrackingService : Service() {
             Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
         }
 
+        // Query initial battery immediately to catch already-low battery or app restarts
+        val currentBattery = BatteryAlertManager.getBatteryLevel(this)
+        if (currentBattery != null) {
+            lastKnownBatteryLevel = currentBattery
+            val sessionId = SosStateManager.getActiveSessionId(this)
+            val userId = SosStateManager.getUserId(this)
+            BatteryAlertManager.evaluateAndSendAlert(this, currentBattery, sessionId)
+            BatteryAlertManager.publishBatteryToFirebase(userId, currentBattery)
+        }
+
         startContinuousLocationTracking()
         return START_STICKY
     }
@@ -167,7 +211,7 @@ class SosTrackingService : Service() {
 
     /**
      * Processes location coordinates.
-     * When online, uploads directly to Firebase and flushes any pending queue.
+     * When online, uploads directly to Firebase (including battery info) and flushes any pending queue.
      * When offline or upon Firebase delivery failure, persists in local queue and triggers throttled fallback SMS.
      */
     private fun handleLocationUpdate(latitude: Double, longitude: Double) {
@@ -185,7 +229,8 @@ class SosTrackingService : Service() {
                     timestamp = timestamp,
                     status = "SOS_ACTIVE",
                     sessionId = sessionId,
-                    senderUserId = userId
+                    senderUserId = userId,
+                    batteryLevel = lastKnownBatteryLevel
                 )
             )
             updateNotificationContent(latitude, longitude, isOffline = true)
@@ -193,7 +238,7 @@ class SosTrackingService : Service() {
             return
         }
 
-        val locationData = mapOf(
+        val locationData = mutableMapOf<String, Any>(
             "latitude" to latitude,
             "longitude" to longitude,
             "time" to timestamp,
@@ -202,6 +247,10 @@ class SosTrackingService : Service() {
             "sessionId" to sessionId,
             "senderUserId" to userId
         )
+        if (lastKnownBatteryLevel != null) {
+            locationData["batteryLevel"] = lastKnownBatteryLevel!!
+            locationData["batteryTimestamp"] = timestamp
+        }
 
         try {
             FirebaseDatabase.getInstance().reference
@@ -226,7 +275,8 @@ class SosTrackingService : Service() {
                             timestamp = timestamp,
                             status = "SOS_ACTIVE",
                             sessionId = sessionId,
-                            senderUserId = userId
+                            senderUserId = userId,
+                            batteryLevel = lastKnownBatteryLevel
                         )
                     )
                     updateNotificationContent(latitude, longitude, isOffline = true)
@@ -242,7 +292,8 @@ class SosTrackingService : Service() {
                     timestamp = timestamp,
                     status = "SOS_ACTIVE",
                     sessionId = sessionId,
-                    senderUserId = userId
+                    senderUserId = userId,
+                    batteryLevel = lastKnownBatteryLevel
                 )
             )
             updateNotificationContent(latitude, longitude, isOffline = true)
@@ -253,10 +304,11 @@ class SosTrackingService : Service() {
     private fun updateNotificationContent(latitude: Double, longitude: Double, isOffline: Boolean = false) {
         val sdf = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
         val timeStr = sdf.format(Date())
+        val batteryStr = if (lastKnownBatteryLevel != null) " | 🔋 $lastKnownBatteryLevel%" else ""
         val body = if (isOffline) {
-            "⚠️ Offline (GPS Queued): %.4f, %.4f | %s".format(latitude, longitude, timeStr)
+            "⚠️ Offline (GPS Queued): %.4f, %.4f | %s%s".format(latitude, longitude, timeStr, batteryStr)
         } else {
-            "Live GPS: %.4f, %.4f | Updated: %s".format(latitude, longitude, timeStr)
+            "Live GPS: %.4f, %.4f | Updated: %s%s".format(latitude, longitude, timeStr, batteryStr)
         }
 
         val updatedNotification = buildForegroundNotification(
@@ -324,6 +376,17 @@ class SosTrackingService : Service() {
         NetworkMonitor.unregisterNetworkCallback(this, networkCallback)
         networkCallback = null
 
+        // Unregister battery receiver and reset alert state when SOS stops
+        if (batteryReceiver != null) {
+            try {
+                unregisterReceiver(batteryReceiver)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering battery receiver: ${e.message}")
+            }
+            batteryReceiver = null
+        }
+        BatteryAlertManager.resetAlertState(this)
+
         OfflineSosManager.resetFallbackState(this)
 
         if (isLocationCallbackRegistered) {
@@ -351,7 +414,8 @@ class SosTrackingService : Service() {
                     timestamp = System.currentTimeMillis(),
                     status = "SOS_STOPPED",
                     sessionId = "",
-                    senderUserId = userId
+                    senderUserId = userId,
+                    batteryLevel = lastKnownBatteryLevel
                 )
             )
             Log.d(TAG, "Enqueued SOS_STOPPED status while offline for user $userId")
@@ -380,6 +444,16 @@ class SosTrackingService : Service() {
         Log.d(TAG, "SosTrackingService.onDestroy()")
         NetworkMonitor.unregisterNetworkCallback(this, networkCallback)
         networkCallback = null
+
+        if (batteryReceiver != null) {
+            try {
+                unregisterReceiver(batteryReceiver)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering battery receiver in onDestroy: ${e.message}")
+            }
+            batteryReceiver = null
+        }
+
         if (isServiceRunning) {
             stopTrackingAndFinish()
         }

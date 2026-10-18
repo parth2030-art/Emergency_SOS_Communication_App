@@ -10,6 +10,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.ImageButton
 import android.widget.TextView
+import android.view.View
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -26,6 +27,7 @@ class ReceiverMapActivity : AppCompatActivity() {
 
     private lateinit var mapView: MapView
     private lateinit var txtStatus: TextView
+    private lateinit var txtBatteryStatus: TextView
 
     private lateinit var database: DatabaseReference
     private var locationListener: ValueEventListener? = null
@@ -52,6 +54,7 @@ class ReceiverMapActivity : AppCompatActivity() {
 
         mapView = findViewById(R.id.mapView)
         txtStatus = findViewById(R.id.txtStatus)
+        txtBatteryStatus = findViewById(R.id.txtBatteryStatus)
 
         val btnBack = findViewById<ImageButton>(R.id.btnBack)
         btnBack.setOnClickListener {
@@ -234,6 +237,38 @@ class ReceiverMapActivity : AppCompatActivity() {
                     } else {
                         txtStatus.text = "🔴 Victim Tracking Active | 🔵 Your Location\nUpdated: $lastUpdated"
                         txtStatus.setTextColor(ContextCompat.getColor(this@ReceiverMapActivity, R.color.success_green))
+                    }
+
+                    // Display victim phone battery level if reported
+                    val batteryRaw = snapshot.child("batteryLevel").value
+                    val batteryLevel = when (batteryRaw) {
+                        is Number -> batteryRaw.toInt()
+                        is String -> batteryRaw.toIntOrNull()
+                        else -> null
+                    }
+                    val batteryTimeRaw = snapshot.child("batteryTimestamp").value
+                    val batteryTimestamp = when (batteryTimeRaw) {
+                        is Number -> batteryTimeRaw.toLong()
+                        is String -> batteryTimeRaw.toLongOrNull()
+                        else -> null
+                    }
+
+                    if (batteryLevel != null) {
+                        txtBatteryStatus.visibility = View.VISIBLE
+                        val batteryTimeStr = if (batteryTimestamp != null) {
+                            " (Updated ${formatter.format(Date(batteryTimestamp))})"
+                        } else {
+                            ""
+                        }
+                        if (batteryLevel <= 15) {
+                            txtBatteryStatus.text = "⚠️ Victim Phone Battery: $batteryLevel% (Critically Low!)$batteryTimeStr"
+                            txtBatteryStatus.setTextColor(ContextCompat.getColor(this@ReceiverMapActivity, R.color.error_red))
+                        } else {
+                            txtBatteryStatus.text = "🔋 Victim Phone Battery: $batteryLevel%$batteryTimeStr"
+                            txtBatteryStatus.setTextColor(ContextCompat.getColor(this@ReceiverMapActivity, R.color.primary))
+                        }
+                    } else {
+                        txtBatteryStatus.visibility = View.GONE
                     }
 
                     updateVictimMarker(latitude = latitude, longitude = longitude, status = status)

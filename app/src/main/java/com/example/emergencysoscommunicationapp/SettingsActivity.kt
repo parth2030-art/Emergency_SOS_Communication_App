@@ -102,7 +102,28 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, "Shake Sensitivity set to: $selectedLevel", Toast.LENGTH_SHORT).show()
         }
 
-        // 5. Permissions Checker
+        // 5. Low-Battery Threshold Setup
+        val spinnerBatteryThreshold = findViewById<AutoCompleteTextView>(R.id.spinnerBatteryThreshold)
+        val thresholdOptions = arrayOf("10%", "15% (Default)", "20%", "25%")
+        val thresholdValues = arrayOf(10, 15, 20, 25)
+        val thresholdAdapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, thresholdOptions)
+        spinnerBatteryThreshold.setAdapter(thresholdAdapter)
+
+        val currentThreshold = BatteryAlertManager.getLowBatteryThreshold(this)
+        val initialText = when (currentThreshold) {
+            10 -> "10%"
+            20 -> "20%"
+            25 -> "25%"
+            else -> "15% (Default)"
+        }
+        spinnerBatteryThreshold.setText(initialText, false)
+        spinnerBatteryThreshold.setOnItemClickListener { _, _, position, _ ->
+            val selectedThreshold = thresholdValues.getOrElse(position) { 15 }
+            BatteryAlertManager.setLowBatteryThreshold(this, selectedThreshold)
+            Toast.makeText(this, "Low Battery Alert Threshold set to $selectedThreshold%", Toast.LENGTH_SHORT).show()
+        }
+
+        // 6. Permissions Checker
         checkPermissionsUI(txtLocationStatus, imgStatusDot)
 
         btnLocationPerm.setOnClickListener {
