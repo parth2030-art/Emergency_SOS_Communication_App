@@ -23,12 +23,13 @@ class FirebaseMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         Log.d("SOS_FIREBASE", "New FCM token generated: ${token.take(10)}...")
-        FcmTokenManager.registerDeviceToken(this, userId = "user_1", role = "victim")
+        val userId = SosStateManager.getUserId(this)
+        FcmTokenManager.registerDeviceToken(this, userId = userId, role = "victim")
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         val sosSessionId = message.data["sosSessionId"] ?: message.data["sessionId"] ?: ""
-        val senderUserId = message.data["senderUserId"] ?: "user_1"
+        val senderUserId = message.data["senderUserId"] ?: SosStateManager.DEFAULT_USER_ID
         val role = message.data["role"] ?: "guardian"
 
         Log.d("SOS_NOTIFICATION", "senderUserId=$senderUserId")
@@ -57,8 +58,8 @@ class FirebaseMessagingService : FirebaseMessagingService() {
     }
 
     private fun isCurrentDeviceSender(senderUserId: String): Boolean {
-        val prefs = getSharedPreferences("SOS_STATE_PREFS", Context.MODE_PRIVATE)
-        return prefs.getBoolean("is_sos_active", false)
+        val currentUserId = SosStateManager.getUserId(this)
+        return senderUserId.equals(currentUserId, ignoreCase = true) && SosStateManager.isSosActive(this)
     }
 
     private fun isSessionAlreadyProcessed(sessionId: String): Boolean {
@@ -86,11 +87,15 @@ class FirebaseMessagingService : FirebaseMessagingService() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
 
-        val requestCode = if (sosSessionId.isNotBlank()) sosSessionId.hashCode() else ACTIVE_SOS_NOTIFICATION_ID
+        val notificationId = if (sosSessionId.isNotBlank()) {
+            (senderUserId + "_" + sosSessionId).hashCode()
+        } else {
+            ("fcm_" + senderUserId).hashCode()
+        }
 
         val pendingIntent = PendingIntent.getActivity(
             this,
-            requestCode,
+            notificationId,
             receiverIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -129,7 +134,7 @@ class FirebaseMessagingService : FirebaseMessagingService() {
             .setContentIntent(pendingIntent)
             .build()
 
-        notificationManager.notify(ACTIVE_SOS_NOTIFICATION_ID, notification)
-        Log.d("SOS_NAVIGATION", "Posted guardian notification targeting ReceiverMapActivity with data=${receiverIntent.data}")
+        notificationManager.notify(notificationId, notification)
+        Log.d("SOS_NAVIGATION", "Posted guardian notification (ID: $notificationId) targeting ReceiverMapActivity with data=${receiverIntent.data}")
     }
 }

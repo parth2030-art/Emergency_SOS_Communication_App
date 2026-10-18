@@ -1,14 +1,22 @@
 package com.example.emergencysoscommunicationapp
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.CountDownTimer
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.telephony.SmsManager
 import android.util.Log
 import android.view.View
@@ -21,12 +29,14 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.android.gms.location.*
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.firebase.database.FirebaseDatabase
 
 class HomeActivity : AppCompatActivity() {
@@ -37,8 +47,6 @@ class HomeActivity : AppCompatActivity() {
         private const val KEY_SESSION_ID = "active_session_id"
     }
 
-    private lateinit var locationCallback: LocationCallback
-
     private val fusedLocationClient by lazy {
         LocationServices.getFusedLocationProviderClient(this)
     }
@@ -47,34 +55,62 @@ class HomeActivity : AppCompatActivity() {
     private var isSosActive = false
     @Volatile
     private var isSosStarting = false
-    private var isLocationTrackingStarted = false
     private var currentSessionId: String = ""
 
     private var mediaPlayer: MediaPlayer? = null
+
+    private var sensorManager: SensorManager? = null
+    private var shakeDetector: ShakeDetector? = null
+    private var countdownDialog: AlertDialog? = null
+    private var countdownTimer: CountDownTimer? = null
+    private var isReceiverRegistered = false
+
+    private val sosStoppedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == SosStateManager.ACTION_SOS_STOPPED) {
+                Log.d("HomeActivity", "Received ACTION_SOS_STOPPED broadcast. Restoring UI.")
+                restoreSosStateUI()
+                stopSosAlarm()
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_home)
 
+        val requiredPermissions = mutableListOf(
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requiredPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val missingPermissions = requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
             ActivityCompat.requestPermissions(
                 this,
-                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                200
+                missingPermissions.toTypedArray(),
+                100
             )
         }
 
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(
-                Manifest.permission.SEND_SMS,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ),
-            100
-        )
+        // Initialize shake detector
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        shakeDetector = ShakeDetector {
+            runOnUiThread {
+                handleShakeTrigger()
+            }
+        }
 
-        // Register multi-device FCM Token in Firebase Realtime Database under users/user_1/devices/{deviceId}
-        FcmTokenManager.registerDeviceToken(this, userId = "user_1", role = "victim")
+        // Register multi-device FCM Token in Firebase Realtime Database
+        val userId = SosStateManager.getUserId(this)
+        FcmTokenManager.registerDeviceToken(this, userId = userId, role = "victim")
 
         val btnSOS = findViewById<Button>(R.id.btnSOS)
         val btnContacts = findViewById<MaterialCardView>(R.id.btnContacts)
@@ -118,17 +154,80 @@ class HomeActivity : AppCompatActivity() {
         updateLocationStatusUI()
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            updateLocationStatusUI()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         restoreSosStateUI()
         startPulseAnimation()
         updateLocationStatusUI()
+
+        // Register broadcast receiver to catch STOP SOS actions from the Foreground Service notification
+        val filter = IntentFilter(SosStateManager.ACTION_SOS_STOPPED)
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                sosStoppedReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            isReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.e("HomeActivity", "Error registering sosStoppedReceiver: ${e.message}")
+        }
+
+        // If tracking was stopped from notification or LocationActivity, clean up siren
+        if (!SosStateManager.isSosActive(this)) {
+            stopSosAlarm()
+        }
+
+        // Register shake detector if enabled in settings
+        val prefs = getSharedPreferences("SOS_SETTINGS", MODE_PRIVATE)
+        val isShakeEnabled = prefs.getBoolean("shake_sos_enabled", false)
+        val sensitivityStr = prefs.getString("shake_sensitivity", "Medium") ?: "Medium"
+        shakeDetector?.setSensitivity(sensitivityStr)
+
+        if (isShakeEnabled) {
+            sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sensor ->
+                sensorManager?.registerListener(shakeDetector, sensor, SensorManager.SENSOR_DELAY_UI)
+            }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager?.unregisterListener(shakeDetector)
+        shakeDetector?.reset()
+
+        countdownTimer?.cancel()
+        countdownTimer = null
+        if (countdownDialog?.isShowing == true) {
+            countdownDialog?.dismiss()
+        }
+        countdownDialog = null
+
+        if (isReceiverRegistered) {
+            try {
+                unregisterReceiver(sosStoppedReceiver)
+                isReceiverRegistered = false
+            } catch (e: Exception) {
+                Log.w("HomeActivity", "sosStoppedReceiver was not registered: ${e.message}")
+            }
+        }
     }
 
     private fun restoreSosStateUI() {
-        val prefs = getSharedPreferences(PREFS_SOS_STATE, MODE_PRIVATE)
-        isSosActive = prefs.getBoolean(KEY_IS_SOS_ACTIVE, false)
-        currentSessionId = prefs.getString(KEY_SESSION_ID, "") ?: ""
+        isSosActive = SosStateManager.isSosActive(this)
+        currentSessionId = SosStateManager.getActiveSessionId(this)
 
         val btnSOS = findViewById<Button>(R.id.btnSOS)
         val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
@@ -144,8 +243,7 @@ class HomeActivity : AppCompatActivity() {
 
     @Synchronized
     private fun activateSosOnce() {
-        val prefs = getSharedPreferences(PREFS_SOS_STATE, MODE_PRIVATE)
-        val activeInPrefs = prefs.getBoolean(KEY_IS_SOS_ACTIVE, false)
+        val activeInPrefs = SosStateManager.isSosActive(this)
 
         if (isSosActive || isSosStarting || activeInPrefs) {
             Log.w("SOS_DEBUG", "SOS Activation ignored: Already active or starting.")
@@ -160,16 +258,14 @@ class HomeActivity : AppCompatActivity() {
         btnStopSOS?.isVisible = true
 
         currentSessionId = "sos_${System.currentTimeMillis()}"
+        val userId = SosStateManager.getUserId(this)
 
-        prefs.edit()
-            .putBoolean(KEY_IS_SOS_ACTIVE, true)
-            .putString(KEY_SESSION_ID, currentSessionId)
-            .apply()
+        SosStateManager.setSosActive(this, currentSessionId, userId)
 
         isSosActive = true
         isSosStarting = false
 
-        Log.d("SOS_DEBUG", "SOS session created: $currentSessionId. Starting dispatch.")
+        Log.d("SOS_DEBUG", "SOS session created: $currentSessionId for user $userId. Starting dispatch.")
 
         // 1. Send SMS to unique emergency contacts
         sendEmergencySmsOnce()
@@ -194,12 +290,20 @@ class HomeActivity : AppCompatActivity() {
             return
         }
 
+        // Check SEND_SMS permission explicitly before proceeding
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "SMS Permission Required to Send SOS", Toast.LENGTH_LONG).show()
+            Log.e("SOS_NOTIFICATION", "SEND_SMS permission not granted")
+            return
+        }
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "Location Permission Required", Toast.LENGTH_SHORT).show()
             return
         }
 
         val uniqueContacts = contacts.distinctBy { normalizePhone(it.phone) }
+        val userId = SosStateManager.getUserId(this)
 
         fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
             .addOnSuccessListener { location ->
@@ -217,7 +321,7 @@ Initial Location Pin:
 https://maps.google.com/?q=${location.latitude},${location.longitude}
 
 View Live Movement in App:
-emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
+emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
                     """.trimIndent()
                 } else {
                     """
@@ -226,16 +330,19 @@ emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
 $customMsg
 
 Location unavailable. View Live Track when online:
-emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
+emergencysos://livetrack?senderUserId=$userId&sosSessionId=$currentSessionId
                     """.trimIndent()
                 }
 
-                val smsManager = SmsManager.getDefault()
+                val smsManager = SosStateManager.getSmsManager(this)
+                val parts = smsManager.divideMessage(message)
                 for (contact in uniqueContacts) {
                     try {
-                        val parts = smsManager.divideMessage(message)
                         smsManager.sendMultipartTextMessage(contact.phone, null, parts, null, null)
                         Log.d("SOS_NOTIFICATION", "SMS sent successfully to unique contact: ${contact.phone}")
+                    } catch (e: SecurityException) {
+                        Log.e("SOS_NOTIFICATION", "SecurityException sending SMS to ${contact.phone}: ${e.message}")
+                        Toast.makeText(this, "SMS Permission Denied", Toast.LENGTH_SHORT).show()
                     } catch (e: Exception) {
                         Log.e("SOS_NOTIFICATION", "Failed to send SMS to ${contact.phone}: ${e.message}")
                     }
@@ -327,6 +434,7 @@ emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
     private fun uploadLocationToFirebase(latitude: Double, longitude: Double) {
         val database = FirebaseDatabase.getInstance().reference
         val timestamp = System.currentTimeMillis()
+        val userId = SosStateManager.getUserId(this)
 
         val locationData = mapOf(
             "latitude" to latitude,
@@ -335,13 +443,13 @@ emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
             "timestamp" to timestamp,
             "status" to if (isSosActive) "SOS_ACTIVE" else "SOS_STOPPED",
             "sessionId" to currentSessionId,
-            "senderUserId" to "user_1"
+            "senderUserId" to userId
         )
 
-        Log.d("SOS_FIREBASE", "Sender location update to path=sos_locations/user_1: lat=$latitude, lng=$longitude, status=${locationData["status"]}")
+        Log.d("SOS_FIREBASE", "Sender location update to path=sos_locations/$userId: lat=$latitude, lng=$longitude, status=${locationData["status"]}")
 
         database.child("sos_locations")
-            .child("user_1")
+            .child(userId)
             .setValue(locationData)
             .addOnSuccessListener {
                 Log.d("SOS_FIREBASE", "Firebase location update SUCCESS")
@@ -352,82 +460,115 @@ emergencysos://livetrack?senderUserId=user_1&sosSessionId=$currentSessionId
     }
 
     private fun startLiveLocationTracking() {
-        if (isLocationTrackingStarted) {
-            Log.d("SOS_DEBUG", "Location tracking updates already active. Skipping duplicate request.")
-            return
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            return
-        }
-
-        isLocationTrackingStarted = true
-
-        val locationRequest = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY,
-            5000L
-        )
-            .setMinUpdateIntervalMillis(3000L)
-            .setMinUpdateDistanceMeters(5.0f)
-            .build()
-
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(locationResult: LocationResult) {
-                val location = locationResult.lastLocation ?: return
-                Log.d("SOS_DEBUG", "Sender continuous update: lat=${location.latitude}, lng=${location.longitude}")
-                uploadLocationToFirebase(location.latitude, location.longitude)
-            }
-        }
-
-        fusedLocationClient.requestLocationUpdates(
-            locationRequest,
-            locationCallback,
-            Looper.getMainLooper()
-        )
-
-        Log.d("SOS_DEBUG", "FusedLocationProviderClient started continuous tracking updates.")
+        val userId = SosStateManager.getUserId(this)
+        SosStateManager.startSosService(this, currentSessionId, userId)
+        Log.d("SOS_DEBUG", "Delegated live location tracking to SosTrackingService.")
     }
 
     private fun stopLiveLocationTracking() {
-        if (::locationCallback.isInitialized && isLocationTrackingStarted) {
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-            isLocationTrackingStarted = false
-        }
+        SosStateManager.stopSosService(this)
 
         isSosActive = false
         isSosStarting = false
 
         stopSosAlarm()
 
-        getSharedPreferences(PREFS_SOS_STATE, MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_IS_SOS_ACTIVE, false)
-            .remove(KEY_SESSION_ID)
-            .apply()
+        val userId = SosStateManager.getUserId(this)
+        SosStateManager.setSosInactive(this)
+        SosStateManager.updateFirebaseStatus("SOS_STOPPED", userId)
 
-        updateSOSStatusInFirebase()
-
-        val btnSOS = findViewById<Button>(R.id.btnSOS)
-        val btnStopSOS = findViewById<Button>(R.id.btnStopSOS)
-
-        btnSOS?.isEnabled = true
-        btnStopSOS?.isVisible = false
+        restoreSosStateUI()
 
         Log.d("SOS_DEBUG", "SOS session stopped successfully.")
         Toast.makeText(this, "SOS Stopped", Toast.LENGTH_SHORT).show()
     }
 
-    private fun updateSOSStatusInFirebase() {
-        val database = FirebaseDatabase.getInstance().reference
-        database.child("sos_locations")
-            .child("user_1")
-            .child("status")
-            .setValue("SOS_STOPPED")
-        Log.d("SOS_FIREBASE", "Firebase status set to SOS_STOPPED")
+    private fun vibrateForShakeAlert() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator?.vibrate(
+                    VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator?.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(500)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("HomeActivity", "Vibration error: ${e.message}")
+        }
+    }
+
+    private fun handleShakeTrigger() {
+        if (isSosActive || isSosStarting || SosStateManager.isSosActive(this)) {
+            Log.d("HomeActivity", "Shake detected but SOS is already active or starting.")
+            return
+        }
+
+        if (countdownDialog?.isShowing == true) {
+            Log.d("HomeActivity", "Countdown dialog already showing.")
+            return
+        }
+
+        vibrateForShakeAlert()
+
+        var secondsRemaining = 5
+
+        val dialogBuilder = MaterialAlertDialogBuilder(this)
+            .setTitle("⚠️ Shake Detected: Emergency SOS")
+            .setMessage("Emergency SOS will activate in $secondsRemaining seconds.\n\nCancel if this was an accidental trigger.")
+            .setCancelable(false)
+            .setNegativeButton("CANCEL (False Alarm)") { dialog, _ ->
+                countdownTimer?.cancel()
+                countdownTimer = null
+                dialog.dismiss()
+                Toast.makeText(this, "SOS Cancelled", Toast.LENGTH_SHORT).show()
+            }
+            .setPositiveButton("ACTIVATE NOW") { dialog, _ ->
+                countdownTimer?.cancel()
+                countdownTimer = null
+                dialog.dismiss()
+                activateSosOnce()
+            }
+
+        countdownDialog = dialogBuilder.create()
+        countdownDialog?.show()
+
+        countdownTimer = object : CountDownTimer(5000, 1000) {
+            override fun onTick(millisUntilFinished: Long) {
+                secondsRemaining = (millisUntilFinished / 1000).toInt() + 1
+                if (countdownDialog?.isShowing == true) {
+                    countdownDialog?.setMessage("Emergency SOS will activate in $secondsRemaining seconds.\n\nCancel if this was an accidental trigger.")
+                }
+            }
+
+            override fun onFinish() {
+                if (countdownDialog?.isShowing == true) {
+                    countdownDialog?.dismiss()
+                }
+                countdownDialog = null
+                countdownTimer = null
+                if (!isSosActive && !isSosStarting && !SosStateManager.isSosActive(this@HomeActivity)) {
+                    activateSosOnce()
+                }
+            }
+        }.start()
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        countdownTimer?.cancel()
+        countdownTimer = null
+        if (countdownDialog?.isShowing == true) {
+            countdownDialog?.dismiss()
+        }
+        countdownDialog = null
         stopSosAlarm()
+        super.onDestroy()
     }
 }

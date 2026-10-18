@@ -36,7 +36,7 @@ class LocationActivity : BaseActivity() {
         LocationServices.getFusedLocationProviderClient(this)
     }
 
-    private var isTracking = false
+    private var isMapLocationStarted = false
     private var latitude = 0.0
     private var longitude = 0.0
 
@@ -84,6 +84,7 @@ class LocationActivity : BaseActivity() {
             stopLiveLocationSharing()
         }
 
+        updateTrackingStatusUI()
         checkLocationPermission()
     }
 
@@ -91,6 +92,25 @@ class LocationActivity : BaseActivity() {
         mapView.setTileSource(MapHelper.getOsmTileSource())
         mapView.setMultiTouchControls(true)
         mapView.controller.setZoom(17.0)
+    }
+
+    private fun updateTrackingStatusUI() {
+        val isSosActive = SosStateManager.isSosActive(this)
+        if (isSosActive) {
+            txtTrackingStatus.text = "Status: SOS Active (Broadcasting)"
+            txtTrackingStatus.setTextColor(ContextCompat.getColor(this, R.color.success_green))
+            imgTrackingDot.imageTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.success_green)
+            )
+            btnStopSharing.text = "Stop SOS Tracking"
+        } else {
+            txtTrackingStatus.text = "Status: Local View (Not Broadcasting)"
+            txtTrackingStatus.setTextColor(ContextCompat.getColor(this, R.color.medium_gray))
+            imgTrackingDot.imageTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.medium_gray)
+            )
+            btnStopSharing.text = "Close"
+        }
     }
 
     private fun checkLocationPermission() {
@@ -111,25 +131,33 @@ class LocationActivity : BaseActivity() {
             return
         }
 
-        isTracking = true
-        txtTrackingStatus.text = "Status: Active"
-        txtTrackingStatus.setTextColor(ContextCompat.getColor(this, R.color.success_green))
-        imgTrackingDot.imageTintList = android.content.res.ColorStateList.valueOf(
-            ContextCompat.getColor(this, R.color.success_green)
-        )
+        if (isMapLocationStarted) return
+        isMapLocationStarted = true
 
         fusedLocationClient.requestLocationUpdates(
             locationRequest,
             locationCallback,
             Looper.getMainLooper()
         )
-        Log.d("SOS_DEBUG", "LocationActivity started location updates.")
+        Log.d("SOS_DEBUG", "LocationActivity started map location updates.")
     }
 
     private fun stopLiveLocationSharing() {
-        if (isTracking) {
+        if (isMapLocationStarted) {
             fusedLocationClient.removeLocationUpdates(locationCallback)
-            isTracking = false
+            isMapLocationStarted = false
+        }
+
+        val wasSosActive = SosStateManager.isSosActive(this)
+        if (wasSosActive) {
+            val userId = SosStateManager.getUserId(this)
+            SosStateManager.setSosInactive(this)
+            SosStateManager.updateFirebaseStatus("SOS_STOPPED", userId)
+            SosStateManager.stopSosService(this)
+            Log.d("SOS_FIREBASE", "LocationActivity synchronized SOS stop to Firebase and Service for $userId")
+            Toast.makeText(this, "Live Location Sharing Stopped", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Closed Live Location View", Toast.LENGTH_SHORT).show()
         }
 
         txtTrackingStatus.text = "Status: Inactive"
@@ -138,12 +166,6 @@ class LocationActivity : BaseActivity() {
             ContextCompat.getColor(this, R.color.error_red)
         )
 
-        val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
-        database.child("status").setValue("SOS_STOPPED")
-
-        Log.d("SOS_FIREBASE", "LocationActivity set status to SOS_STOPPED")
-        Toast.makeText(this, "Live Location Sharing Stopped", Toast.LENGTH_SHORT).show()
-        
         finish()
     }
 
@@ -179,8 +201,11 @@ class LocationActivity : BaseActivity() {
 
         mapView.invalidate()
 
-        if (isTracking) {
-            val database = FirebaseDatabase.getInstance().getReference("sos_locations").child("user_1")
+        // ONLY upload to Firebase if an SOS emergency is actively in progress
+        if (SosStateManager.isSosActive(this)) {
+            val userId = SosStateManager.getUserId(this)
+            val sessionId = SosStateManager.getActiveSessionId(this)
+            val database = FirebaseDatabase.getInstance().getReference("sos_locations").child(userId)
             val timestamp = System.currentTimeMillis()
             val locationData = mapOf(
                 "latitude" to latitude,
@@ -188,10 +213,11 @@ class LocationActivity : BaseActivity() {
                 "time" to timestamp,
                 "timestamp" to timestamp,
                 "status" to "SOS_ACTIVE",
-                "senderUserId" to "user_1"
+                "sessionId" to sessionId,
+                "senderUserId" to userId
             )
             database.setValue(locationData).addOnSuccessListener {
-                Log.d("SOS_FIREBASE", "LocationActivity uploaded location: lat=$latitude, lng=$longitude")
+                Log.d("SOS_FIREBASE", "LocationActivity uploaded live SOS coordinates: lat=$latitude, lng=$longitude")
             }
         }
     }
@@ -199,6 +225,7 @@ class LocationActivity : BaseActivity() {
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        updateTrackingStatusUI()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             startLiveLocationUpdates()
         }
@@ -207,8 +234,9 @@ class LocationActivity : BaseActivity() {
     override fun onPause() {
         super.onPause()
         mapView.onPause()
-        if (isTracking) {
+        if (isMapLocationStarted) {
             fusedLocationClient.removeLocationUpdates(locationCallback)
+            isMapLocationStarted = false
         }
     }
 }

@@ -30,12 +30,6 @@ class SmsReceiver : BroadcastReceiver() {
                 if (messageBody.contains("SOS", ignoreCase = true)) {
                     Log.d("SOS_NAVIGATION", "Incoming SMS SOS alert detected: $messageBody")
 
-                    try {
-                        abortBroadcast()
-                    } catch (e: Exception) {
-                        Log.w("SOS_NAVIGATION", "Cannot abort broadcast: ${e.message}")
-                    }
-
                     val prefs = context.getSharedPreferences(PREFS_SMS_DEDUPE, Context.MODE_PRIVATE)
                     val lastTime = prefs.getLong("last_sms_time", 0L)
                     val currentTime = System.currentTimeMillis()
@@ -46,6 +40,14 @@ class SmsReceiver : BroadcastReceiver() {
                     }
 
                     prefs.edit().putLong("last_sms_time", currentTime).apply()
+
+                    // Extract tracking parameters from SMS deep link if available
+                    val uriRegex = Regex("""(emergencysos://livetrack[^\s]+)""")
+                    val match = uriRegex.find(messageBody)
+                    val trackingUri = match?.value?.let { Uri.parse(it) }
+                    val senderUserId = trackingUri?.getQueryParameter("senderUserId")?.takeIf { it.isNotBlank() } ?: "user_1"
+                    val sosSessionId = trackingUri?.getQueryParameter("sosSessionId")?.takeIf { it.isNotBlank() } ?: ""
+                    val dataUri = trackingUri ?: Uri.parse("emergencysos://livetrack?senderUserId=$senderUserId")
 
                     val channelId = "sos_alert_channel"
                     val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -74,14 +76,24 @@ class SmsReceiver : BroadcastReceiver() {
 
                     val receiverIntent = Intent(context, ReceiverMapActivity::class.java).apply {
                         action = "com.example.emergencysoscommunicationapp.OPEN_LIVE_TRACKING"
-                        data = Uri.parse("emergencysos://livetrack?senderUserId=user_1")
-                        putExtra("senderUserId", "user_1")
+                        data = dataUri
+                        putExtra("senderUserId", senderUserId)
+                        if (sosSessionId.isNotBlank()) {
+                            putExtra("sosSessionId", sosSessionId)
+                        }
                         flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    }
+
+                    // Session/sender-unique notification ID prevents collisions while updating the same session
+                    val notificationId = if (sosSessionId.isNotBlank()) {
+                        (senderUserId + "_" + sosSessionId).hashCode()
+                    } else {
+                        ("sms_" + senderUserId).hashCode()
                     }
 
                     val pendingIntent = PendingIntent.getActivity(
                         context,
-                        FirebaseMessagingService.ACTIVE_SOS_NOTIFICATION_ID,
+                        notificationId,
                         receiverIntent,
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
@@ -102,10 +114,10 @@ class SmsReceiver : BroadcastReceiver() {
 
                     try {
                         NotificationManagerCompat.from(context).notify(
-                            FirebaseMessagingService.ACTIVE_SOS_NOTIFICATION_ID,
+                            notificationId,
                             notificationBuilder.build()
                         )
-                        Log.d("SOS_NAVIGATION", "SMS Receiver posted notification targeting ReceiverMapActivity")
+                        Log.d("SOS_NAVIGATION", "SMS Receiver posted notification (ID: $notificationId) targeting ReceiverMapActivity for sender $senderUserId")
                     } catch (e: SecurityException) {
                         Log.e("SOS_NAVIGATION", "Permission missing for POST_NOTIFICATIONS: ${e.message}")
                     }

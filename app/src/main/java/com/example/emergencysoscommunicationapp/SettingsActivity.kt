@@ -71,7 +71,38 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, "Alert tone set to: $selectedTone", Toast.LENGTH_SHORT).show()
         }
 
-        // 4. Permissions Checker
+        // 4. Shake to Activate SOS Setup
+        val switchShakeSOS = findViewById<SwitchMaterial>(R.id.switchShakeSOS)
+        val spinnerShakeSensitivity = findViewById<AutoCompleteTextView>(R.id.spinnerShakeSensitivity)
+        val tilShakeSensitivity = findViewById<com.google.android.material.textfield.TextInputLayout>(R.id.tilShakeSensitivity)
+
+        val isShakeEnabled = prefs.getBoolean("shake_sos_enabled", false)
+        switchShakeSOS.isChecked = isShakeEnabled
+        tilShakeSensitivity.visibility = if (isShakeEnabled) android.view.View.VISIBLE else android.view.View.GONE
+
+        switchShakeSOS.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean("shake_sos_enabled", isChecked).apply()
+            tilShakeSensitivity.visibility = if (isChecked) android.view.View.VISIBLE else android.view.View.GONE
+            Toast.makeText(
+                this,
+                if (isChecked) "Shake SOS Enabled" else "Shake SOS Disabled",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        val sensitivityLevels = arrayOf("Low", "Medium", "High")
+        val sensitivityAdapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, sensitivityLevels)
+        spinnerShakeSensitivity.setAdapter(sensitivityAdapter)
+
+        val savedSensitivity = prefs.getString("shake_sensitivity", "Medium") ?: "Medium"
+        spinnerShakeSensitivity.setText(savedSensitivity, false)
+        spinnerShakeSensitivity.setOnItemClickListener { parent, _, position, _ ->
+            val selectedLevel = parent.getItemAtPosition(position) as String
+            prefs.edit().putString("shake_sensitivity", selectedLevel).apply()
+            Toast.makeText(this, "Shake Sensitivity set to: $selectedLevel", Toast.LENGTH_SHORT).show()
+        }
+
+        // 5. Permissions Checker
         checkPermissionsUI(txtLocationStatus, imgStatusDot)
 
         btnLocationPerm.setOnClickListener {
